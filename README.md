@@ -1,5 +1,5 @@
 # pvd_morphology
-Software for quantitative analysis of microscopy images of C. elegans PVD neurons.
+Software for quantitative analysis of microscopy images of *C. elegans* PVD neurons.
 
 ## Configuration and File Setup
 To set up the Python environment, use the imaging_env.yml file in this repo to create an environment. If some necessary modules are still missing after this step, use `pip install`. To load the custom modules in this repo, run:
@@ -33,12 +33,14 @@ Original images, their coordinates, and downsampled versions can reside within t
 ## Step 1: Straighten Images
 Run `image_preprocessing.py` to perform preprocessing of images. There will be two outputs:
 1) An 8x downsampled maximum intensity projection (`*small.tif`, for determination of straightening coordinates)
-2) A 2x downsampled z-stack image ('*squished.tif', to be straightened)
+2) A 2x downsampled z-stack image (`*squished.tif`, to be straightened)
 
 *Note that parts of the script may need to be adjusted to match your file organization structure!*
 
 Run `generate_coordinates.py` to open a Napari GUI. Set line 204 to the first 8x downsampled file:
-`path = Path("{path_to_your_8xds_image}")`
+```
+path = Path("{path_to_your_8xds_image}")
+```
 
 The GUI will extract coordinates down the midline of the worm, which are used to produce straightened images. Follow these six simple steps:
 1) Blur the 8x downsampled image. Adjust the 'sigma' blur radius value as desired and click 'Run' in the upper right corner.
