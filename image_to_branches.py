@@ -10,7 +10,7 @@ Created on Mon Sep  8 17:24:52 2025
 import os
 os.chdir('{dir_where_repo_is_stored}/pvd_morphology/')
 import sys
-sys.path.append('./modules')
+sys.path.append('./ml_modules')
 
 import pvd_processing as pvd
 import numpy as np
