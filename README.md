@@ -30,7 +30,7 @@ The recommended file structure consists of a typical subdirectories contained wi
 
 Original images, their coordinates, and downsampled versions can reside within the directory as loose files (not in a subdirectory). This format does not need to be followed but is highly recommended, as different file organizations may require adjustments of the scripts.
 
-## Step 1: Straighten Images
+## Step 1: Obtain Straightening Coordinates
 Run `image_preprocessing.py` to perform preprocessing of images. There will be two outputs:
 1) An 8x downsampled maximum intensity projection (`*small.tif`, for determination of straightening coordinates)
 2) A 2x downsampled z-stack image (`*squished.tif`, to be straightened)
@@ -50,10 +50,12 @@ The GUI will extract coordinates down the midline of the worm, which are used to
 5) In the fourth sidebar module, make sure the image layer is set to 'image (data)' and the path layer is set to 'center line'. For the 'spline output' click select file to name the output file for the coordinates.
 6) To save the coordinates, press 'straighten'. A preview of the straightened image will appear in the GUI. If the anterior-posterior orientation is incorrect, check 'flip worm'. If the thickness needs to be adjusted, change the 'width'. Press 'straighten' again to get the coordinates with the altered settings.
 
+![]("Desktop/Screenshot 2025-10-07 at 4.10.05 PM.png")
+
 While the GUI is open, all layers can be deleted once straightening is complete and the next 8x downsampled image can be dragged and dropped into the GUI. Repeat the same steps on this next image.
 
-## Step 2: Mask and Classify Dendrites
-Run `image_to_branches.py` to make a mask of each straightened image, classify the branches as 1º - 4º, and compute statistics on branches. It is critical to ensure the paths to the segmentation and classification models are correct.
+## Step 2: Straighten, Mask, and Classify Dendrites
+Run `image_to_branches.py` to straighten each image, make a mask, classify the branches as 1º - 4º, and compute statistics on branches. It is critical to ensure the paths to the segmentation and classification models are correct.
 
 *Note that parts of the script may need to be adjusted to match your file organization structure!*
 
