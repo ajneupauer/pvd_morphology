@@ -1,3 +1,7 @@
+import os
+os.chdir('{dir_where_repo_is_stored}/pvd_morphology/')
+import sys
+sys.path.append('./modules')
 import torch.nn as nn
 
 from parts import (
