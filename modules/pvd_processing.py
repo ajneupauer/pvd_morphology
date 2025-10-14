@@ -7,9 +7,6 @@ Created on Fri Sep  5 13:16:08 2025
 """
 
 # Import modules
-import sys
-sys.path.append('starr-luxton-lab/pvd-project/scripts/modules')
-sys.path.append('starr-luxton-lab/pvd-project/UNets-torch/src/unets_torch')
 
 import numpy as np
 import scipy.ndimage as ndi
@@ -21,8 +18,6 @@ import models
 import pvd_classifier_1 as pc1
 import branch_reconstructor as br
 import pandas as pd
-
-
 
 # Image straightening
 def make_straightened(image_file, coords):

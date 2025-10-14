@@ -10,14 +10,17 @@ sys.path.append('{modules_dir}')
 Then modules can simply be imported with `import {custom_module}`.
 
 Here is a table of all the Python files to run in this pipeline and their required modules:
+
 | Script | Required Modules |
 | ---- | ---- |
-| image_preprocessing.py | tifffile, pathlib.Path, numpy, ims.ImarisReader^1 |
-| generate_coordinates.py | pathlib.Path, numpy, scipy.ndimage, skimage, tifffile, magicgui.magicgui, napari.layers.Image, napari.layers.Labels, napari.layers.Shapes, napari.types.ImageData, napari.types.LabelsData, napari.types.LayerDataTuple, scipy.interpolate, scipy.optimize.minimize, straightening_utilsº | 
-| image_to_branches.py | tifffile, pathlib.Path, torch, numpy, pvd_processingº, modelsº, pvd_classifier_1º |
-| feature_extraction.py | pandas, tifffile, pathlib.Path, seaborn, matplotlib.pyplot, numpy, scipy.stats, sklearn.preprocessing.StandardScaler, sklearn.decomposition.PCA, pvd_plotsº |
+| image_preprocessing.py | tifffile, pathlib.Path, numpy, ims.ImarisReader^1^ |
+| generate_coordinates.py | pathlib.Path, numpy, scipy.ndimage, skimage, tifffile, magicgui.magicgui, napari.layers.Image, napari.layers.Labels, napari.layers.Shapes, napari.types.ImageData, napari.types.LabelsData, napari.types.LayerDataTuple, scipy.interpolate, scipy.optimize.minimize, straightening_utils^1^ | 
+| image_to_branches.py | tifffile, pathlib.Path, torch, numpy, pvd_processing^1,2^, models^1,3^, pvd_classifier_1^1^ |
+| feature_extraction.py | pandas, tifffile, pathlib.Path, seaborn, matplotlib.pyplot, numpy, scipy.stats, sklearn.preprocessing.StandardScaler, sklearn.decomposition.PCA, pvd_plots^1^ |
 
-^1Custom module in this repo.
+^1^Custom module in this repo.
+^2^Depends on custom branch_reconstructor^1^ module.
+^3^Depends on custom parts^1^ module.
 
 All scripts manage module imports, but this table is useful as reference.
 
@@ -50,7 +53,7 @@ The GUI will extract coordinates down the midline of the worm, which are used to
 5) In the fourth sidebar module, make sure the image layer is set to 'image (data)' and the path layer is set to 'center line'. For the 'spline output' click select file to name the output file for the coordinates.
 6) To save the coordinates, press 'straighten'. A preview of the straightened image will appear in the GUI. If the anterior-posterior orientation is incorrect, check 'flip worm'. If the thickness needs to be adjusted, change the 'width'. Press 'straighten' again to get the coordinates with the altered settings.
 
-![]("/Users/alexneupauer/Desktop/Screenshot 2025-10-07 at 4.10.05 PM.png")
+![](/Users/alexneupauer/Desktop/napari_demo.png)
 
 While the GUI is open, all layers can be deleted once straightening is complete and the next 8x downsampled image can be dragged and dropped into the GUI. Repeat the same steps on this next image.
 

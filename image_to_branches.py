@@ -10,7 +10,7 @@ Created on Mon Sep  8 17:24:52 2025
 import os
 os.chdir('{dir_where_repo_is_stored}/pvd_morphology/')
 import sys
-sys.path.append('./ml_modules')
+sys.path.append('./ml_models')
 
 import pvd_processing as pvd
 import numpy as np
@@ -24,7 +24,7 @@ import tifffile
 # Define function to get branch stats on an image
 
 # Load ML models
-unet_path = Path("./models/20250613-pvdseg.pth")
+unet_path = Path("./ml_models/20250613-pvdseg.pth")
 compute_device = torch.device("mps")
 model = models.AttentionUNet(1, 1, features=[16, 32, 64, 128], use_logits=True)
 unet = torch.load(unet_path, weights_only=False)
@@ -32,7 +32,7 @@ model.load_state_dict(unet["model_state_dict"])
 model = model.to(compute_device)
 
 classifier = pc1.PVDNeuriteClassifier()
-classifier.load_model('./models/class-3.joblib')
+classifier.load_model('./ml_models/class-3.joblib')
 
 # Function
 def img_to_branches(img_path, seg_model, seg_compute_device, classifier):
