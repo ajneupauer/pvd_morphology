@@ -27,32 +27,58 @@ def make_small(in_img):
     return np.uint16(maxProj)
 
 # Make a 2x downsampled z-stack
-def make_squished(in_img):
-    dsImg = in_img[:, ::2, ::2]
-    depth, height, width = dsImg.shape
+def make_squished(in_img, downsample = True):
+    if downsample:
+        in_img = in_img[:, ::2, ::2]
+    depth, height, width = in_img.shape
     out_img = np.empty([depth // 2, height, width])
     for i in range(depth // 2):
-        out_img[i] = dsImg[2*i:2*(i+1)].max(axis = 0)
+        out_img[i] = in_img[2*i:2*(i+1)].max(axis = 0)
     return np.uint16(out_img)    
+
+def filter_empty_layers(image):
+    depth = image.shape[0]
+    layers_to_keep = []
+    
+    for z in range(depth):
+        if np.mean(image[z]) >= 80:
+            layers_to_keep.append(z)
+        else:
+            print(f'Removing layer {z}')        
+    
+    edited = image[layers_to_keep, :, :]
+    return edited
+
 
 # %%
 # For many images
 
 fpath = Path('{dir_to_raw_images}')
+files = []
 
-for file in fpath.glob('*ims'):
-    print(file)
+for file in fpath.glob('*small.tif'):
+    if '._' in file.stem:
+        continue
+    files.append(file.stem.replace('_small', ''))
 
-    outpath = '{dir_to_outputs}' + file.stem.replace('Confocal - 561_Confocal - 488_', '')[11:] # ! 
+files.sort()
+
+for file in files:    
+    file = Path(file)
+    outpath = '{dir_to_outputs}' + file.stem.replace('Confocal - 561_Confocal - 488_', '')[11:]
     
-    myImg = ImarisReader(file).get_image_data(return_array = True)
+    myImg = ImarisReader(file).get_image_data(channel = 1, return_array = True)
+    squished = make_squished(myImg, downsample = False)
+    final = filter_empty_layers(squished)
+    tifffile.imwrite(outpath.replace('FusionStitcher', 'mito_squished.tif'), final, compression = 'lzw')
     
+    myImg = ImarisReader(file).get_image_data(channel = 0, return_array = True)
     small = make_small(myImg)
     squished = make_squished(myImg)
+    final = filter_empty_layers(squished)
+    tifffile.imwrite(outpath.replace('FusionStitcher', 'small.tif'), small, compression = 'lzw')
+    tifffile.imwrite(outpath.replace('FusionStitcher', 'squished.tif'), final, compression = 'lzw')
     
-    tifffile.imwrite(outpath.replace('FusionStitcher', 'small.tif'), small, compression = 'lzw') # ! 
-    tifffile.imwrite(outpath.replace('FusionStitcher', 'squished.tif'), squished, compression = 'lzw') # ! 
-
 # ! = may need to adjust based on how your files are named
     
 
