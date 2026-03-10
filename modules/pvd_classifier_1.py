@@ -12,7 +12,8 @@ from skan import csr
 import seaborn as sns
 import cv2
 from collections import Counter
-from imblearn.over_sampling import SMOTE
+from scipy.interpolate import splprep, splev
+#from imblearn.over_sampling import SMOTE
 
 class PVDNeuriteClassifier:
     def __init__(self, estimators = 100, class_weight = 'balanced'):
@@ -185,26 +186,17 @@ class PVDNeuriteClassifier:
         segment_features = []
         n = 0
         for i, segment in enumerate(segments):
-            # Calculate segment length
-            length = len(segment)
-            
-            # Calculate segment orientation (angle between start and end)
-            start, end = segment[0], segment[-1]
-            dy, dx = end[0] - start[0], end[1] - start[1]
-            angle = np.arctan2(dy, dx) * 180 / np.pi
-            
-            # Calculate segment curvature
-            if length > 5:
-                # Approximate curvature as the sum of angles between consecutive segments
-                curvature = calculate_smoothed_curvature(segment)
-                #if curvature == np.nan:
-                #    curvature = 0
+            num_pts = len(segment)
+            if num_pts > 5:
+                length, orientation, curvature, tortuosity, waviness = branch_geom(segment)
            
                 segment_features.append({
                     'id': n,
                     'length': length,
-                    'orientation': angle,
+                    'orientation': orientation,
                     'curvature': curvature,
+                    'tortuosity': tortuosity,
+                    'waviness': waviness,
                     'segment': segment
                 })
                 n += 1
@@ -227,26 +219,29 @@ class PVDNeuriteClassifier:
         features = []
         for idx, row in segments.iterrows():
             segment = row['segment']
+            # Get x and y coords at each point
+            x_pos = [pt[1] for pt in segment]
+            y_pos = [pt[0] for pt in segment]
             
             # Average intensity
-            intensities = [max_proj[pt[0], pt[1]] for pt in segment]
+            #intensities = []
+            #for i in range(len(segment)):
+            #    if x_pos[i] < skeleton.shape[1] and y_pos[i] < skeleton.shape[0]:
+            #        intensities.append(max_proj[x_pos[i], y_pos[i]])
+            intensities = [max_proj[y_pos[i], x_pos[i]] for i in range(len(segment))]
             avg_intensity = np.mean(intensities)
             
-            length = row['length']
-            euclidean_length = np.linalg.norm(np.array([segment[-1][0] - segment[0][0], segment[-1][1] - segment[0][1]]))
-            tortuosity = length / euclidean_length if euclidean_length > 0 else 1
-            
-            segment_midpoint = segment[len(segment) // 2]
-            rel_x = segment_midpoint[1] / skeleton.shape[1]
-            rel_y = segment_midpoint[0] / skeleton.shape[0]
+            # Segment position
+            midpt_x = np.mean(x_pos)
+            rel_x = midpt_x / skeleton.shape[1]
+            midpt_y = np.mean(y_pos)
             
             # Local density (how many skeleton pixels in neighborhood)
             neighborhood_size = 200
-            y_min = max(0, segment_midpoint[0] - neighborhood_size)
-            y_max = min(skeleton.shape[0], segment_midpoint[0] + neighborhood_size)
-            x_min = max(0, segment_midpoint[1] - neighborhood_size)
-            x_max = min(skeleton.shape[1], segment_midpoint[1] + neighborhood_size)
-            
+            y_min = round(max(0, midpt_y - neighborhood_size))
+            y_max = round(min(skeleton.shape[0], midpt_y + neighborhood_size))
+            x_min = round(max(0, midpt_x - neighborhood_size))
+            x_max = round(min(skeleton.shape[1], midpt_x + neighborhood_size))
             local_density = np.sum(skeleton[y_min:y_max, x_min:x_max]) / ((y_max-y_min) * (x_max-x_min))
             
             # Get horizontalness and verticalness
@@ -267,16 +262,18 @@ class PVDNeuriteClassifier:
             
             features.append({
                 'id': row['id'],
+                'length': row['length'],
                 'orientation': row['orientation'],
+                'curvature': row['curvature'],
+                #'tortuosity': row['tortuosity'],
+                'waviness': row['waviness'],
                 'horizontal_likely': hNess > 0.5,
-                'relative_y': rel_y,
+                'relative_y': midpt_y / skeleton.shape[0],
                 'relative_x': rel_x,
-                #'quat_filter': 338 * ((rel_x - 0.5) ** 6) - 180 * ((rel_x - 0.5) ** 4) + 24 * ((rel_x - 0.5) ** 2),
                 'quat_filter': 0.2 * np.sin(3 * np.pi * rel_x) + 0.5,
+                #'quat_filter': 338 * ((rel_x - 0.5) ** 6) - 180 * ((rel_x - 0.5) ** 4) + 24 * ((rel_x - 0.5) ** 2),
                 #'tert_filter': np.e ** ((-0.5 * (rel_x - 0.25)/0.1) ** 2) + np.e ** ((-0.5 * (rel_x - 0.75)/0.1) ** 2),
                 #'sec_filter': np.e ** ((-0.5 * (rel_x - 0.35)/0.08) ** 2) + np.e ** ((-0.5 * (rel_x - 0.65)/0.08) ** 2),
-                'curvature': row['curvature'],
-                'tortuosity': tortuosity,
                 'local_density': local_density,
                 'average_intensity': avg_intensity
             })
@@ -301,7 +298,7 @@ class PVDNeuriteClassifier:
             for idx, row in features.iterrows():
                 segment_id = row['id']
                 if segment_id in image_labels and image_labels[segment_id] != 0:
-                    all_features.append(row.drop('id').values)
+                    all_features.append(row.drop(['id', 'length']).values)
                     all_labels.append(image_labels[segment_id])
         
         X = np.array(all_features)
@@ -314,14 +311,14 @@ class PVDNeuriteClassifier:
             print(f"Class {class_label}: {count} samples")
         
         # Apply balancing
-        if balance_method == 'smote':
-            smote = SMOTE(random_state=42)
-            X, y = smote.fit_resample(X, y)
+        #if balance_method == 'smote':
+        #    smote = SMOTE(random_state=42)
+        #    X, y = smote.fit_resample(X, y)
         
-            class_counts = Counter(y)
-            print("Class distribution after balancing:")
-            for class_label, count in sorted(class_counts.items()):
-                print(f"Class {class_label}: {count} samples")
+        #    class_counts = Counter(y)
+        #    print("Class distribution after balancing:")
+        #    for class_label, count in sorted(class_counts.items()):
+        #        print(f"Class {class_label}: {count} samples")
         
         # Train model
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
@@ -335,14 +332,13 @@ class PVDNeuriteClassifier:
         # Feature importance
         feature_names = [
             'orientation',
+            'curvature',
+            #'tortuosity',
+            'waviness',
             'horizontal_likely',
             'relative_y',
             'relative_x',
             'quat_filter',
-            #'tert_filter',
-            #'sec_filter',
-            'curvature',
-            'tortuosity',
             'local_density',
             'average_intensity'
         ]
@@ -373,7 +369,7 @@ class PVDNeuriteClassifier:
         features = self.extract_features(img, max_proj)
         
         # Predict
-        predictions = self.model.predict(features.drop('id', axis=1).values)
+        predictions = self.model.predict(features.drop(['id', 'length'], axis=1).values)
         
         # Add predictions to features
         features['dendrite_type'] = predictions
@@ -493,24 +489,47 @@ def prune_terminal_branches(skeleton, min_length=5):
         
     return pruned_skeleton
 
-def calculate_smoothed_curvature(segment, window_size=20):
-    if len(segment) <= window_size:
-        return 0
-    curvatures = []
-    for i in range(window_size//2, len(segment) - window_size//2):
-        # Use points at window_size apart for more stable curvature
-        p1 = segment[i - window_size//2]
-        p2 = segment[i]
-        p3 = segment[i + window_size//2]
-        # Calculate Menger curvature using three points
-        menger_denom = np.sqrt((p3[0] - p1[0])**2 + (p3[1] - p1[1])**2)
-        vec1 = np.array(p1) - np.array(p2)
-        vec2 = np.array(p3) - np.array(p2)
-        vec1 = vec1 / np.linalg.norm(vec1)
-        vec2 = vec2 / np.linalg.norm(vec2)
-        dot_product = np.clip(np.dot(vec1, vec2), -1.0, 1.0)
-        angle = np.arccos(dot_product)
-        menger_num = 2 * np.sin(angle)
-        curvatures.append(menger_num/menger_denom)
-        
-    return np.mean(curvatures)
+def orientation_curvature_via_spline(points, s=0.1): # Use m - np.sqrt(2*m), m = # points
+    """Compute curvature using spline fitting"""
+    tck, u = splprep(points.T, s=s, k=3)
+    
+    # Evaluate derivatives
+    velocity = np.array(splev(u, tck, der=1)).T
+    acceleration = np.array(splev(u, tck, der=2)).T
+    
+    # Compute curvature
+    cross = velocity[:, 0] * acceleration[:, 1] - velocity[:, 1] * acceleration[:, 0]
+    curvature = cross / np.linalg.norm(velocity, axis=1)**3
+    
+    # For 2D: compute angles from tangent vectors
+    angles = np.arctan2(velocity[:, 1], velocity[:, 0])
+    
+    return angles, curvature
+
+def branch_geom(branch):
+    branch = np.array(branch)
+    
+    length = 0
+    diffs = np.abs(np.diff(branch, axis=0))
+    
+    for i in range(diffs.shape[0]):
+        point = diffs[i, :]
+        px_dist = np.sqrt(point[0]**2 + point[1]**2)
+        length += px_dist
+    
+    length = round(length)
+    euclidean_length = np.linalg.norm(np.array([branch[-1, 0] - branch[0, 0], branch[-1, 1] - branch[0, 1]]))
+    tortuosity = length / euclidean_length
+    
+    s = branch.shape[0] - np.sqrt(2 * branch.shape[0])
+    angles, curvature = orientation_curvature_via_spline(branch, s)
+    sign_changes = np.sum(np.diff(np.sign(curvature)) != 0)
+    waviness = sign_changes / length
+    mean_curve = np.mean(np.abs(curvature))
+    
+    # Handle angle wrapping for circular mean
+    avg_orientation = np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))
+    avg_orientation = np.degrees(avg_orientation)
+    
+    return length, avg_orientation, mean_curve, tortuosity, waviness
+

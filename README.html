@@ -414,24 +414,34 @@ branch_reconstructor<sup>1</sup> module. <sup>3</sup>Depends on custom
 parts<sup>1</sup> module.</p>
 <p>All scripts manage module imports, but this table is useful as
 reference.</p>
-<p>The recommended file structure consists of a typical subdirectories
-contained within a directory for each separate experiment. Within each
-directory are the following subdirectories:</p>
+<p>The recommended file structure is to devote a directory to a unique
+experiment. Each image has the following associated files:</p>
 <ul>
-<li>branches: csv files containing branch data per each neuron, named as
-<code>*branches.csv</code>.</li>
-<li>featureExtraction: plots and PCA outputs go here.</li>
-<li>maxProj: max intensity projections of 2x downsampled straightened
-images, named as <code>*maxProj.tif</code>.</li>
-<li>segmentations: masks of neuron images, named as
-<code>*seg.tif</code>.</li>
-<li>straightenedImgs: 2x downsampled straightened images, named as
-<code>*Straightened.tif</code>.</li>
+<li><code>branches.csv</code>: csv file containing branch data per each
+neuron.</li>
+<li><code>mip.tif</code>: max intensity projection (MIP) of 2x
+downsampled straightened images.</li>
+<li><code>mito_rmbg.tif</code>: processed MIP of the mitochondrial
+channel.</li>
+<li><code>mito_seg.tif</code>: mask of the mitochondrial channel.</li>
+<li><code>mito_squished.tif</code>: z-stack of the mitochondrial
+channel, ‘downsampled’ by 2 in z.</li>
+<li><code>mito_Straightened.tif</code>: straightened z-stack
+mitochondrial image.</li>
+<li><code>mito.csv</code>: csv file containing data per mitochondrial
+foci.</li>
+<li><code>seg.tif</code>: mask of the neurites.</li>
+<li><code>squished.tif</code>: z-stack of the neurite channel,
+‘downsampled’ by 2 in z, y, x.</li>
+<li><code>Straightened.tif</code>: straightened z-stack neurite
+image.</li>
+<li><code>small.tif</code>: neurite MIP downsampled by 8 in y, x.</li>
+<li><code>.npy</code>: coordinates for straightening.</li>
 </ul>
-<p>Original images, their coordinates, and downsampled versions can
-reside within the directory as loose files (not in a subdirectory). This
-format does not need to be followed but is highly recommended, as
-different file organizations may require adjustments of the scripts.</p>
+<p>Morphological profiles and principal component loadings are also
+saved in this directory as <code>stats.csv</code> and
+<code>loadings.csv</code>, respectively. Plots of specific features are
+saved here as <code>.png</code> images.</p>
 </div>
 <div id="step-1-obtain-straightening-coordinates" class="section level2">
 <h2>Step 1: Obtain Straightening Coordinates</h2>

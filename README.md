@@ -26,15 +26,22 @@ Here is a table of all the Python files to run in this pipeline and their requir
 
 All scripts manage module imports, but this table is useful as reference.
 
-The recommended file structure consists of a typical subdirectories contained within a directory for each separate experiment. Within each directory are the following subdirectories:
+The recommended file structure is to devote a directory to a unique experiment. Each image has the following associated files:
 
-* branches: csv files containing branch data per each neuron, named as `*branches.csv`.
-* featureExtraction: plots and PCA outputs go here.
-* maxProj: max intensity projections of 2x downsampled straightened images, named as `*maxProj.tif`.
-* segmentations: masks of neuron images, named as `*seg.tif`.
-* straightenedImgs: 2x downsampled straightened images, named as `*Straightened.tif`.
+* `branches.csv`: csv file containing branch data per each neuron.
+* `mip.tif`: max intensity projection (MIP) of 2x downsampled straightened images.
+* `mito_rmbg.tif`: processed MIP of the mitochondrial channel.
+* `mito_seg.tif`: mask of the mitochondrial channel.
+* `mito_squished.tif`: z-stack of the mitochondrial channel, 'downsampled' by 2 in z.
+* `mito_Straightened.tif`: straightened z-stack mitochondrial image.
+* `mito.csv`: csv file containing data per mitochondrial foci.
+* `seg.tif`: mask of the neurites.
+* `squished.tif`: z-stack of the neurite channel, 'downsampled' by 2 in z, y, x.
+* `Straightened.tif`: straightened z-stack neurite image.
+* `small.tif`: neurite MIP downsampled by 8 in y, x.
+* `.npy`: coordinates for straightening.
 
-Original images, their coordinates, and downsampled versions can reside within the directory as loose files (not in a subdirectory). This format does not need to be followed but is highly recommended, as different file organizations may require adjustments of the scripts.
+Morphological profiles and principal component loadings are also saved in this directory as `stats.csv` and `loadings.csv`, respectively. Plots of specific features are saved here as `.png` images.
 
 ## Step 1: Obtain Straightening Coordinates
 Run `image_preprocessing.py` to perform preprocessing of images. There will be two outputs:
@@ -58,7 +65,7 @@ The GUI will extract coordinates down the midline of the worm, which are used to
 5) In the fourth sidebar module, make sure the image layer is set to 'image (data)' and the path layer is set to 'center line'. For the 'spline output' click select file to name the output file for the coordinates.
 6) To save the coordinates, press 'straighten'. A preview of the straightened image will appear in the GUI. If the anterior-posterior orientation is incorrect, check 'flip worm'. If the thickness needs to be adjusted, change the 'width'. Press 'straighten' again to get the coordinates with the altered settings.
 
-![](/Users/alexneupauer/Desktop/napari_demo.png)
+![](/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/napari_demo.png)
 
 While the GUI is open, all layers can be deleted once straightening is complete and the next 8x downsampled image can be dragged and dropped into the GUI. Repeat the same steps on this next image.
 

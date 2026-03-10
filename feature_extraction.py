@@ -24,6 +24,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import pvd_plots
 import random
+from scipy.spatial import KDTree
 
 
 # %%
@@ -65,46 +66,77 @@ def uniq_neighbor_pairs(neighbors):
     
     return neighbor_pairs
 
+def sort_key(strain):
+    genotype, age = strain.split('-')
+    age_num = int(age.replace('day', ''))
+    # Return tuple: (age_number, genotype_priority)
+    # wt gets priority 0, anc1null gets priority 1
+    genotype_priority = 0 if genotype == 'wt' else 1
+    return (age_num, genotype_priority)
+
+def generate_random_hex_color():
+    """Generates a random hexadecimal color code."""
+    r = random.randint(0, 255)
+    g = random.randint(0, 255)
+    b = random.randint(0, 255)
+    return f'#{r:02x}{g:02x}{b:02x}'
+
 # Obtain morphological profiles of all images in a given directory/folder
 def write_feature_table(folder, adj_branch_distributions = True):
+    # Collect all files
     folder = Path(folder)
+    files = []
+    for file in folder.glob('*branches.csv'):
+        files.append(str(file))
+    files.sort()
     
+    # Generate a morphological profile of each file
     stats = []
     
-    for filepath in folder.glob('*branches.csv'):
-        
-        data = pd.read_csv(filepath).iloc[:, 1:]
+    for file in files:
+        # PART ONE: READ DATA
+        data = pd.read_csv(file).iloc[:, 1:]
         data['branch'] = [eval(branch) for branch in data['branch']]
         data['neighbors'] = [eval(neighbor) for neighbor in data['neighbors']]
-        
-        # get neuron length and cell body pos
-        img_name = str(folder.parent) + '/maxProj-1/' + filepath.stem.replace('branches', 'maxProj.tif')
+        nodes = pd.read_csv(file.replace('branches.csv', 'nodes.csv')).iloc[:, 1:]
+        mito_data = pd.read_csv(file.replace('branches.csv', 'mito.csv')).iloc[:, 1:]
+        img_name = file.replace('branches.csv', 'mip.tif')
         img = tifffile.imread(img_name)
-        length = img.shape[0]
-        cellbody = find_cellbody(img_name)
-        cellbody_pct = 100 * cellbody / length
+        length, width = img.shape # get image dimensions in px
         
-        # Make in units of microns
-        length_um = round(length * 0.1048)
-        ant_length = round(cellbody * 0.1048)
+        # Get basic stats
+        cellbody = find_cellbody(img_name) # px
+        img_name = Path(file).stem.replace('_branches', '')
+        genotype = file.split('_')[2:4]
+        genotype = genotype[0] + '-' + genotype[1]
+        
+        
+        # PART TWO: COMPUTE STATS PER EACH BRANCH CLASS
+        # I: Get Neuron Length And Cell Body Pos
+        cellbody_pct = 100 * cellbody / length # %
+        length_um = round(length * 0.2096) # make in units of microns
+        ant_length = round(cellbody * 0.2096)
         post_length = length_um - ant_length
         
-        # get stats per class
-        # 1. primary
+        # II: Primary
         prim = data[data['dendrite_type'] == 1]
         prim_ct = len(prim)
-        prim_length = round(sum(prim['length']) * 0.1048)
-        prim_wavy = np.mean(prim['tortuosity'])
+        prim_length = round(sum(prim['length']))
+        prim_wavy = np.mean(prim['waviness'])
+        prim_tort_mask = np.isfinite(prim['tortuosity'])
+        prim_tort = np.mean(prim['tortuosity'][prim_tort_mask])
         prim_curve = np.mean(prim['curvature'])
         prim_intensity = np.mean(prim['intensity'])
         prim_angle = np.mean(prim['orientation'])
         prim_angle_sd = np.std(prim['orientation'])
         
-        # 2. secondary
+        # III: Secondary
         sec = data[data['dendrite_type'] == 2]
         sec_ct = len(sec)
-        sec_length = round(sum(sec['length']) * 0.1048)
-        sec_wavy = np.mean(sec['tortuosity'])
+        sec_length = round(sum(sec['length']))
+        sec_wavy = np.mean(sec['waviness'])
+        sec_tort_mask = np.isfinite(sec['tortuosity'])
+        sec_tort = np.mean(sec['tortuosity'][sec_tort_mask])
         sec_curve = np.mean(sec['curvature'])
         sec_intensity = np.mean(sec['intensity'])
         
@@ -115,16 +147,19 @@ def write_feature_table(folder, adj_branch_distributions = True):
         sec_angle = np.mean(sec_angles)
         sec_angle_sd = np.std(sec_angles)
         
-        # get 2º distribution info
-        sec_branches = list(sec['branch'])
-        y_pos = []
-        for n in range(sec_ct):
-            branch = sec_branches[n]
-            y_coords = [pt[0] for pt in branch]
-            if adj_branch_distributions:
-                y_pos.append(np.mean(y_coords) * 100 / length - cellbody_pct)
-            else:
-                y_pos.append(np.mean(y_coords) * 100 / length)
+        # Get 2º distribution info
+        if adj_branch_distributions:
+            y_pos = [y * 100 / length - cellbody_pct for y in list(sec['mean_y'])]
+        else:
+            y_pos = [y * 100 / length for y in list(sec['mean_y'])]
+        
+        #for n in range(sec_ct):
+        #    branch = sec_branches[n]
+        #    y_coords = [pt[0] for pt in branch]
+        #    if adj_branch_distributions:
+        #        y_pos.append(np.mean(y_coords) * 100 / length - cellbody_pct)
+        #    else:
+        #        y_pos.append(np.mean(y_coords) * 100 / length)
         
         sec_median = np.median(y_pos)
         sec_skew = scs.skew(y_pos)
@@ -132,35 +167,34 @@ def write_feature_table(folder, adj_branch_distributions = True):
         post_sec = sum(1 for y in y_pos if y > 0)
         ant_sec = len(y_pos) - post_sec
         
-        # 3. tertiary
+        # IV: Tertiary
         tert = data[data['dendrite_type'] == 3]
         tert_ct = len(tert)
-        tert_length = round(sum(tert['length']) * 0.1048)
-        tert_wavy = np.mean(tert['tortuosity'])
+        tert_length = round(sum(tert['length']))
+        tert_wavy = np.mean(tert['waviness'])
+        tert_tort_mask = np.isfinite(tert['tortuosity'])
+        tert_tort = np.mean(tert['tortuosity'][tert_tort_mask])
         tert_curve = np.mean(tert['curvature'])
         tert_intensity = np.mean(tert['intensity'])
         tert_angle = np.mean(tert['orientation'])
         tert_angle_sd = np.std(tert['orientation'])
         
-        # get 3º distribution info
-        tert_branches = list(tert['branch'])
-        y_pos = []
-        for n in range(tert_ct):
-            branch = tert_branches[n]
-            y_coords = [pt[0] for pt in branch]
-            if adj_branch_distributions:
-                y_pos.append(np.mean(y_coords) * 100 / length - cellbody_pct)
-            else:
-                y_pos.append(np.mean(y_coords) * 100 / length)
+        # Get 3º distribution info
+        if adj_branch_distributions:
+            y_pos = [y * 100 / length - cellbody_pct for y in list(tert['mean_y'])]
+        else:
+            y_pos = [y * 100 / length for y in list(tert['mean_y'])]
         
         post_tert = sum(1 for y in y_pos if y > 0)
         ant_tert = len(y_pos) - post_tert
         
-        # 4. quaternary
+        # V: Quaternary
         quat = data[data['dendrite_type'] == 4]
         quat_ct = len(quat)
-        quat_length = round(sum(quat['length']) * 0.1048)
-        quat_wavy = np.mean(quat['tortuosity'])
+        quat_length = round(sum(quat['length']))
+        quat_wavy = np.mean(quat['waviness'])
+        quat_tort_mask = np.isfinite(quat['tortuosity'])
+        quat_tort = np.mean(quat['tortuosity'][quat_tort_mask])
         quat_curve = np.mean(quat['curvature'])
         quat_intensity = np.mean(quat['intensity'])
         
@@ -171,16 +205,11 @@ def write_feature_table(folder, adj_branch_distributions = True):
         quat_angle = np.mean(quat_angles)
         quat_angle_sd = np.std(quat_angles)
         
-        # get 4º distribution info
-        quat_branches = list(quat['branch'])
-        y_pos = []
-        for n in range(quat_ct):
-            branch = quat_branches[n]
-            y_coords = [pt[0] for pt in branch]
-            if adj_branch_distributions:
-                y_pos.append(np.mean(y_coords) * 100 / length - cellbody_pct)
-            else:
-                y_pos.append(np.mean(y_coords) * 100 / length)
+        # Get 4º distribution info
+        if adj_branch_distributions:
+            y_pos = [y * 100 / length - cellbody_pct for y in list(quat['mean_y'])]
+        else:
+            y_pos = [y * 100 / length for y in list(quat['mean_y'])]
         
         quat_median = np.median(y_pos)
         quat_skew = scs.skew(y_pos)
@@ -188,14 +217,9 @@ def write_feature_table(folder, adj_branch_distributions = True):
         post_quat = sum(1 for y in y_pos if y > 0)
         ant_quat = len(y_pos) - post_quat
         
-        # get basic stats
-        img_name = filepath.stem.replace('_branches', '')
-        filepath = str(filepath)
-        genotype = filepath.split('_')[2:4]
-        genotype = genotype[0] + '-' + genotype[1]
         
-        # get global stats
-        # 1. interbranch angles and contacts
+        # PART THREE: COMPUTE GLOBAL STATS ON ENTIRE NEURITE NETWORK
+        # I: Interbranch Angles And Contacts
         neighbor_pairs = uniq_neighbor_pairs(list(data['neighbors']))
         
         interbranch_angles = []
@@ -228,7 +252,7 @@ def write_feature_table(folder, adj_branch_distributions = True):
         iba_sd = np.std(interbranch_angles)
         iba_skew = scs.skew(interbranch_angles)
         
-        # 2. length and count ratios
+        # II: Length And Count Ratios
         length_12 = prim_length / sec_length
         length_13 = prim_length / tert_length
         length_14 = prim_length / quat_length
@@ -240,9 +264,103 @@ def write_feature_table(folder, adj_branch_distributions = True):
         ct_42 = quat_ct / sec_ct 
         ct_43 = quat_ct / tert_ct
         
-        # 3. overall orientation distribution
+        # III: Overall Orientation Distribution
         bin_cts = np.histogram(data['orientation'], np.linspace(0, 180, 19))[0]
         total_ct = prim_ct + sec_ct + tert_ct + quat_ct
+        
+        # IV: 'City Streets' Metrics
+        nodes = nodes[nodes['type'] != 'continuation']
+        nodes_noterm = nodes[nodes['type'] == 'branch_point']
+        
+        mito_in_branch_pts = []
+        
+        for ref_idx, ref_row in mito_data.iterrows():
+            mito_x = ref_row['centroid_x']
+            mito_y = ref_row['centroid_y']
+            match_found = False
+            
+            for query_idx, query_row in nodes_noterm.iterrows():
+                if match_found: 
+                    break
+                x_inrange = (query_row['x_pos'] >= mito_x - 5) and (query_row['x_pos'] <= mito_x + 5)
+                y_inrange = (query_row['y_pos'] >= mito_y - 5) and (query_row['y_pos'] <= mito_y + 5)
+                if x_inrange and y_inrange:
+                    match_found = True
+            
+            mito_in_branch_pts.append(match_found)
+        
+        area = (0.2096 ** 2) * length * width
+        
+        # Number of nodes with degree >= 4
+        num_high_degree = sum(nodes_noterm['degree'] >= 4)
+        
+        # Cumulative length of all branches
+        tot_length = sum(data['length'])
+        
+        # Orientation order
+        ori_1 = list(data['orientation'])
+        ori_2 = [angle + 180 for angle in ori_1]
+        ori = ori_1 + ori_2
+        ar = length / width 
+        
+        length_adj = []
+        for idx, row in data.iterrows():
+            # need to divide 1º/3º lengths by the aspect ratio, ar
+            if row['dendrite_type'] == 1 or row['dendrite_type'] == 3:
+                length_adj.append(row['length'] / ar)
+            else:
+                length_adj.append(row['length'])
+        
+        cumul_len = sum(length_adj)
+        weights = [i / (2 * cumul_len) for i in length_adj]
+        weights = 2 * weights
+        
+        weighted_ori = pd.DataFrame(columns = ['orientation', 'weight'])
+        weighted_ori['orientation'] = ori
+        weighted_ori['weight'] = weights
+        weighted_ori = weighted_ori.sort_values(by = 'orientation', ignore_index = True)
+        
+        bins = []
+        bin_prop = sum(weighted_ori[(weighted_ori['orientation'] < 5) | (weighted_ori['orientation'] >= 355)]['weight'])
+        if bin_prop > 0:
+            bins.append(bin_prop)
+        for n in range(0, 35):
+            lbound = 5 + 10 * n
+            ubound = 5 + 10 * (n + 1)
+            bin_prop = sum(weighted_ori[(weighted_ori['orientation'] >= lbound) & (weighted_ori['orientation'] < ubound)]['weight'])
+            if bin_prop > 0:
+                bins.append(bin_prop)
+        
+        Hw = -sum(bins * np.log(bins))
+        ori_order = 1 - ((Hw - 1.386) / (3.584 - 1.386)) ** 2
+        
+        # PART FOUR: COMPUTE STATS ON MITOCHONDRIA!!
+        branch_assignments = mito_data['branch_type']
+        
+        tot_mito_ct = len(mito_data)
+        prim_mito_ct = sum(branch_assignments == 1)
+        sec_mito_ct = sum(branch_assignments == 2)
+        tert_mito_ct = sum(branch_assignments == 3)
+        quat_mito_ct = sum(branch_assignments == 4)
+        
+        y_pos = [y * 100 / length - cellbody_pct for y in list(mito_data['centroid_y'])]
+        
+        ant_mito_ct = sum(1 for y in y_pos if y < 0)
+        post_mito_ct = tot_mito_ct - ant_mito_ct
+        
+        coords = mito_data[['centroid_x', 'centroid_y']]
+        coords = np.array(coords)
+        tree = KDTree(coords)
+        distances, indices = tree.query(coords, k=2)
+        nearest_neighbor_distances = distances[:, 1]  # Second column = nearest neighbor
+        mean_nnd = np.mean(nearest_neighbor_distances)
+        n = len(coords)  # number of points
+        area = length * width
+        expected_mean_distance = 0.5 / np.sqrt(n / area)
+        Rn = mean_nnd / expected_mean_distance
+        
+        mito_filtered = mito_data[mito_data['size_zscore'] <= 2].iloc[:, [2, 5, 6, 8, 10, 13]]
+
         
         stats.append({
             'image': img_name,
@@ -252,13 +370,15 @@ def write_feature_table(folder, adj_branch_distributions = True):
             'prim-ct': prim_ct / length_um,
             'prim-length': prim_length / length_um,
             'prim-wavy': prim_wavy,
+            'prim-tort': prim_tort,
             'prim-curve': prim_curve,
             'prim-intensity': prim_intensity,
             'prim-angle': prim_angle,
             'prim-angle-sd': prim_angle_sd,
-            'sec-ct': sec_ct,# / length_um,
+            'sec-ct': sec_ct / length_um,
             'sec-length': sec_length / length_um,
             'sec-wavy': sec_wavy,
+            'sec-tort': sec_tort,
             'sec-curve': sec_curve,
             'sec-intensity': sec_intensity,
             'sec-angle': sec_angle,
@@ -267,18 +387,20 @@ def write_feature_table(folder, adj_branch_distributions = True):
             'sec-skew': sec_skew,
             'post-sec': post_sec/post_length,# / length_um,
             'ant-sec': ant_sec/ant_length,# / length_um,
-            'tert-ct': tert_ct,# / length_um,
+            'tert-ct': tert_ct / length_um,
             'tert-length': tert_length / length_um,
             'tert-wavy': tert_wavy,
+            'tert-tort': tert_tort,
             'tert-curve': tert_curve,
             'tert-intensity': tert_intensity,
             'tert-angle': tert_angle,
             'tert-angle-sd': tert_angle_sd,
             'post-tert': post_tert/post_length,# / length_um,
             'ant-tert': ant_tert/ant_length,# / length_um,
-            'quat-ct': quat_ct,# / length_um,
+            'quat-ct': quat_ct / length_um,
             'quat-length': quat_length / length_um,
             'quat-wavy': quat_wavy,
+            'quat-tort': quat_tort,
             'quat-curve': quat_curve,
             'quat-intensity': quat_intensity,
             'quat-angle': quat_angle,
@@ -322,31 +444,88 @@ def write_feature_table(folder, adj_branch_distributions = True):
             '34-len-ratio': length_34,
             '23-ct-ratio': ct_23,
             '42-ct-ratio': ct_42,
-            '43-ct-ratio': ct_43
+            '43-ct-ratio': ct_43,
+            'ori-order': round(ori_order, 3),
+            'area': area,
+            'num-term-nodes': (len(nodes) - len(nodes_noterm)) / (0.2096 * length),
+            'pct-term-nodes': 100 * (len(nodes) - len(nodes_noterm)) / len(nodes),
+            'int-density': len(nodes_noterm) / area,
+            'edge-density': tot_length / area,
+            'mean-degree': np.mean(nodes_noterm['degree']),
+            'num-degree-4+': num_high_degree / (0.2096 * length),
+            'pct-degree-4+': 100 * num_high_degree / len(nodes_noterm),
+            'mean-betweenness': np.mean(nodes_noterm['betweenness']),
+            'loop-ct': nodes['loops'][0],
+            
+            'mito-tot-ct': tot_mito_ct, ##
+            'mito-prim-ct': prim_mito_ct,
+            'mito-sec-ct': sec_mito_ct,
+            'mito-tert-ct': tert_mito_ct,
+            'mito-quat-ct': quat_mito_ct,
+            'mito-ant-ct': ant_mito_ct,
+            'mito-post-ct': post_mito_ct,
+            'mito_branch_pt_ct': sum(mito_in_branch_pts) / (0.2096 * length),
+            'mito_branch_pt_pct': 100 * sum(mito_in_branch_pts) / len(mito_data),
+            'mean-nnd': mean_nnd * 0.2096,
+            'rn': Rn,
+            'mito-ecc-mean': np.mean(mito_data['eccentricity']) ,
+            'mito-ecc-sd': np.std(mito_data['eccentricity']),
+            'mito-ecc-skew': scs.skew(mito_data['eccentricity']),
+            'mito-ext-mean': np.mean(mito_data['extent']) ,
+            'mito-ext-sd': np.std(mito_data['extent']),
+            'mito-ext-skew': scs.skew(mito_data['extent']),
+            'mito-perimarea-mean': np.mean(mito_data['perim_area_ratio']) ,
+            'mito-perimarea-sd': np.std(mito_data['perim_area_ratio']),
+            'mito-perimarea-skew': scs.skew(mito_data['perim_area_ratio']),
+            'mito-ori-sd': np.std(mito_data['orientation']),
+            'mito-dist-med': np.median(y_pos),
+            'mito-dist-sd': np.std(y_pos),
+            'mito-dist-skew': scs.skew(y_pos),
+            'mito-size-mean': np.mean(mito_filtered['size']),
+            'mito-size-sd': np.std(mito_filtered['size']),
+            'mito-size-skew': scs.skew(mito_filtered['size']),
+            'mito-majaxis-mean': np.mean(mito_filtered['maj_axis']),
+            'mito-majaxis-sd': np.std(mito_filtered['maj_axis']),
+            'mito-majaxis-skew': scs.skew(mito_filtered['maj_axis']),
+            'mito-minaxis-mean': np.mean(mito_filtered['min_axis']),
+            'mito-minaxis-sd': np.std(mito_filtered['min_axis']),
+            'mito-minaxis-skew': scs.skew(mito_filtered['min_axis']),
+            'mito-diam-mean': np.mean(mito_filtered['equiv_diam_area']),
+            'mito-diam-sd': np.std(mito_filtered['equiv_diam_area']),
+            'mito-diam-skew': scs.skew(mito_filtered['equiv_diam_area']),
+            'mito-perim-mean': np.mean(mito_filtered['perim']),
+            'mito-perim-sd': np.std(mito_filtered['perim']),
+            'mito-perim-skew': scs.skew(mito_filtered['perim']),
+            'mito-feret-mean': np.mean(mito_filtered['feret_diam']),
+            'mito-feret-sd': np.std(mito_filtered['feret_diam']),
+            'mito-feret-skew': scs.skew(mito_filtered['feret_diam'])
             })
+    
     return pd.DataFrame(stats)
 
 # %%
 
 # Generate morphological profiles
-data = write_feature_table('{your_experiment_dir}/branches/')
-data.to_csv('{your_experiment_dir}/featureExtraction/')
+data = write_feature_table('{your_experiment_dir}/')
+data.to_csv('{your_experiment_dir}/stats.csv')
 
 # Perform PCA
 features = list(data.columns)[2:]
 x = data.loc[:, features].values
 x = StandardScaler().fit_transform(x)
 
-pca = PCA(n_components = 2) # Can change if more components are desired
+pca = PCA(n_components = 2)
 principalComponents = pca.fit_transform(x)
 principalDf = pd.DataFrame(data = principalComponents,
                            columns = ['PC_1', 'PC_2'])
-plottingDf = pd.concat([principalDf, data[['image', 'genotype']]], axis = 1)
+plottingDf = pd.concat([principalDf, data[['genotype', 'image']]], axis = 1)
 
-plottingDf.to_csv('{file_name}.csv') # Save PCA
+#strains_to_keep = ['N2_D1', 'N2_D5', 'N2_D9', 'CH_D1', 'CH_D5', 'CH_D9']
+#plottingDf = plottingDf[plottingDf['Genotype'].isin(strains_to_keep)]
 
-# Make PCA plot
 colors = ['#ff7045', '#338bff', '#6ce000', '#ff0000', '#0000ff', '#00a100']
+#colors = ['#ff0000', '#0000ff']
+#colors, markers = generate_genotype_colors_and_age_markers(n_genotypes=2, n_ages=3)
 
 genotypes = set(list(data.loc[:, 'genotype']))
 genotypes = list(genotypes)
@@ -358,23 +537,22 @@ ax.set_xlabel('Principal Component 1', fontsize = 15)
 ax.set_ylabel('Principal Component 2', fontsize = 15)
 ax.set_title('2 component PCA', fontsize = 20)
 
-for genotype, color in zip(genotypes_sort ,colors):
+for genotype, color in zip(genotypes ,colors):
     indicesToKeep = plottingDf['genotype'] == genotype
     ax.scatter(plottingDf.loc[indicesToKeep, 'PC_1'], 
                plottingDf.loc[indicesToKeep, 'PC_2'], 
                c = color, 
                s = 50)
 
-ax.legend(genotypes_sort, bbox_to_anchor=(1, 0.5))
+ax.legend(genotypes_sort)
 ax.grid()
 
-# Get proportion of variance explained by each PC
+
 pca.explained_variance_ratio_
 
-# Get principal component loadings
 loadings = pca.components_.T * np.sqrt(pca.explained_variance_) 
 loadingsDf = pd.DataFrame(loadings, columns = ['PC_1', 'PC_2'], index = features)
-loadingsDf.to_csv('{file_name}.csv') # Save loadings
+loadingsDf.to_csv('{your_experiment_dir}/loadings.csv')
 
 
 # %%
