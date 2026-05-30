@@ -11,7 +11,7 @@ import shutil
 import argparse
 import json
 import os
-os.chdir('starr-luxton-lab/pvd-project/pvd_morphology/')
+os.chdir('/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/')
 import sys
 sys.path.append('./modules')
 
@@ -28,16 +28,16 @@ INPUT_IMG_FMT = payload.get("input_img_fmt")
 
 # %%
 
-FPATH = Path('{dir_to_raw_images}')
+#FPATH = Path('{dir_to_raw_images}')
 # DRY (False) from CLI
-DRY = False
+#DRY = False
 
 def parse_args() -> argparse.Namespace: # the -> defines which type is returned
     parser = argparse.ArgumentParser(
         description="Perform image preprocessing in preparation for image straightening."
     )
     parser.add_argument("dataset_path", type=Path, help="Directory to dataset of raw images.") # args.dataset_path
-    parser.add_argument("--dry-run", action="store_true", default = False) # args.dry_run
+    parser.add_argument("--dry-run", action="store_true") # args.dry_run
     return parser.parse_args()
 
 # args = parse_args()
@@ -45,8 +45,9 @@ def parse_args() -> argparse.Namespace: # the -> defines which type is returned
 # DRY = args.dry_run
 
 # build_output_dirs(FPATH)
-def build_output_dirs(folder: Path, img_ext = ".ims"):
+def build_output_dirs(folder: Path, dry: bool, img_ext = ".ims"):
     files = []
+    img_paths = []
 
     for file in folder.glob('*' + img_ext):
         if '._' in file.stem:
@@ -56,16 +57,22 @@ def build_output_dirs(folder: Path, img_ext = ".ims"):
     files.sort()
 
     for file in files:
-        
         outdir_name = str(folder) + '/' + file.stem
-        outdir_name = Path(outdir_name)
-        outdir_name.mkdir(exist_ok = True)
-        if not file.exists():
+        img_paths.append(outdir_name + '/' + file.name)
+        if dry:
+            print(f"Made dir: {outdir_name}.")
+            print(f"Moved {file.name} to {outdir_name}.\n")
             continue
         else:
-            shutil.move(file, outdir_name)
+            outdir_name = Path(outdir_name)
+            outdir_name.mkdir(exist_ok = True)
+            if not file.exists():
+                continue
+            else:
+                shutil.move(file, outdir_name)
     
-    return files
+    return img_paths
+
 
 # Define preprocessing functions
 
@@ -101,33 +108,61 @@ def filter_empty_layers(image):
 
 
 # %%
-# For many images
 
-fpath = Path('{dir_to_raw_images}')
-files = []
+def main():
+    args = parse_args()
+    FPATH = args.dataset_path
+    DRY = args.dry_run
+    print(DRY)
+    
+    img_paths = build_output_dirs(FPATH, DRY, INPUT_IMG_FMT)
+    
+    for file in img_paths:    
+        if DRY:
+            # print out what would be saved
+            if HAS_MITO:
+                if INPUT_IMG_FMT != ".ims" or INPUT_IMG_FMT != ".tif":
+                    print("Invalid image format!")
+                mito_save_msg = str(file).replace(INPUT_IMG_FMT, '_mito_squished.tif')
+                print(f"Saved {mito_save_msg}.")
+            if INPUT_IMG_FMT != ".ims" or INPUT_IMG_FMT != ".tif":
+                print("Invalid image format!")
+            small_save_msg = str(file).replace(INPUT_IMG_FMT, '_small.tif')
+            squished_save_msg = str(file).replace(INPUT_IMG_FMT, '_squished.tif')
+            print(f"Saved {small_save_msg}.")
+            print(f"Saved {squished_save_msg}.\n")
+            continue
+        
+        if HAS_MITO:
+            if INPUT_IMG_FMT == ".tif":
+                img = tifffile.imread(file)[CHANNELS['mito']]
+            elif INPUT_IMG_FMT == ".ims":
+                file = Path(file)
+                #outpath = '{dir_to_outputs}' + file.stem.replace('Confocal - 561_Confocal - 488_', '')[11:]
+                img = ImarisReader(file).get_image_data(channel = CHANNELS['mito'], return_array = True)
+            else:
+                print("Invalid image format!")
+            
+            squished = make_squished(img, downsample = False)
+            final = filter_empty_layers(squished)
+            tifffile.imwrite(str(file).replace(INPUT_IMG_FMT, '_mito_squished.tif'), final, compression = 'lzw')
+            
+        if INPUT_IMG_FMT == ".tif":
+            img = tifffile.imread(file)[CHANNELS['neurites']]
+        elif INPUT_IMG_FMT == ".ims":
+            file = Path(file)
+            img = ImarisReader(file).get_image_data(channel = CHANNELS['neurites'], return_array = True)
+        else:
+            print("Invalid image format!")
+        
+        small = make_small(img)
+        squished = make_squished(img)
+        final = filter_empty_layers(squished)
+        tifffile.imwrite(str(file).replace(INPUT_IMG_FMT, '_small.tif'), small, compression = 'lzw')
+        tifffile.imwrite(str(file).replace(INPUT_IMG_FMT, '_squished.tif'), final, compression = 'lzw')
 
-for file in fpath.glob('*small.tif'):
-    if '._' in file.stem:
-        continue
-    files.append(file.stem.replace('_small', ''))
+# %%
 
-files.sort()
+if __name__ == "__main__":
+    main()
 
-for file in files:    
-    file = Path(file)
-    outpath = '{dir_to_outputs}' + file.stem.replace('Confocal - 561_Confocal - 488_', '')[11:]
-    
-    myImg = ImarisReader(file).get_image_data(channel = 1, return_array = True)
-    squished = make_squished(myImg, downsample = False)
-    final = filter_empty_layers(squished)
-    tifffile.imwrite(outpath.replace('FusionStitcher', 'mito_squished.tif'), final, compression = 'lzw')
-    
-    myImg = ImarisReader(file).get_image_data(channel = 0, return_array = True)
-    small = make_small(myImg)
-    squished = make_squished(myImg)
-    final = filter_empty_layers(squished)
-    tifffile.imwrite(outpath.replace('FusionStitcher', 'small.tif'), small, compression = 'lzw')
-    tifffile.imwrite(outpath.replace('FusionStitcher', 'squished.tif'), final, compression = 'lzw')
-    
-# ! = may need to adjust based on how your files are named
-    
