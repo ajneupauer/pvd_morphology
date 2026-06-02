@@ -272,23 +272,25 @@ def resample_along_path(
         ),
     ]
 
-
+"""Load the image of a specified index."""
 def load_image(index):
     global viewer, current_image_layer, current_index
 
-    if index < 0 or index >= len(small_files):
+    if index < 0 or index >= len(small_files): # Index canot be negative or exceed # of images
         return
 
-    current_index = index
+    current_index = index # Update current index to index selected
     path = small_files[current_index]
 
     try:
         image = tifffile.imread(path)
-
+        
+        # Remove all existing layers associated with previous image
         layers_to_remove = [layer for layer in viewer.layers]
         for layer in layers_to_remove:
             viewer.layers.remove(layer)
-
+        
+        # Based on the image file name, make a short name to display in the GUI
         short_name = path.stem
         if '_small' in short_name:
             short_name = short_name.replace('_small', '')
@@ -296,6 +298,7 @@ def load_image(index):
         if len(parts) >= 3:
             short_name = '_'.join(parts[-3:])
 
+        # Add image layer to the GUI and display the short name
         current_image_layer = viewer.add_image(
             image,
             colormap="gray",
@@ -303,13 +306,17 @@ def load_image(index):
             gamma=0.25,
             name=short_name
         )
-
+        
+        # Top banner of GUI window gives path to loaded image and progress through entire image list
         viewer.title = f"Napari - [{current_index + 1}/{len(small_files)}] {path.parent.name}"
 
     except Exception as e:
         pass
 
-
+"""
+Define GUI buttons to move to the next or previous image.
+They are simply calls to load_image() of the previous or next index.
+"""
 @magicgui(call_button="<< Previous Image")
 def previous_button():
     load_image(current_index - 1)
@@ -322,14 +329,15 @@ def next_button():
 
 if __name__ == "__main__":
     import napari
+    # Get list of small.tif files within the dataset dir specified in the CLI
     args = parse_args()
     FPATH = args.dataset_path
-    
     small_files = sorted(FPATH.glob("*/*_small.tif"))
 
-    if len(small_files) == 0:
+    if len(small_files) == 0: # Exit program if there are no images
         exit(1)
 
+    # Give the user a list of images discovered and ask which image they would like to open
     print(f"Found {len(small_files)} files to process")
     for i, f in enumerate(small_files):
         print(f"  {i+1}. {f.parent.name}/{f.name}")
@@ -337,19 +345,20 @@ if __name__ == "__main__":
     print(f"Enter file number (1-{len(small_files)}) or press Enter for first: ", end="")
     user_input = input().strip()
 
-    if user_input == "":
+    # Determine current_index based on user input
+    if user_input == "": # Allows user to select first image by typing nothing
         current_index = 0
     else:
         try:
             current_index = int(user_input) - 1
-            if current_index < 0 or current_index >= len(small_files):
-                current_index = 0
-        except ValueError:
+            if current_index < 0 or current_index >= len(small_files): # Index canot be negative or exceed # of images
+                current_index = 0 # Force index = 0 if out of bounds
+        except ValueError: # Force index = 0 if there's an errors
             current_index = 0
 
+    # Set up napari viewer with its widgets and buttons and load the current image
     viewer = napari.Viewer()
 
-#   viewer.window.add_dock_widget(diffuse_image, name="load")
     viewer.window.add_dock_widget(threshold_image, name="make mask")
     viewer.window.add_dock_widget(extract_center_line, name="medial path")
     viewer.window.add_dock_widget(resample_along_path, name="straighten")
