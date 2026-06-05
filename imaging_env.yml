@@ -1,0 +1,31 @@
+name: imaging
+channels:
+  - conda-forge
+  - pytorch
+  - nodefaults
+dependencies:
+  - python=3.10
+  - spyder-kernels=3.0
+  - pytorch
+  - torchvision
+  - tifffile
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - scikit-image
+  - tqdm
+  - napari
+  - seaborn
+  - scikit-learn
+  - magicgui
+  - networkx
+  - joblib
+  - h5py
+  - skan
+  - opencv
+  - qtpy
+  - pyqt
+  - pip
+  - pip:
+    - convpaint

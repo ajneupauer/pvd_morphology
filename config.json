@@ -1,1 +1,1 @@
-{"has_mito": 1,"channels": {"neurites":0, "mito":1},"input_img_fmt": ".ims"}
+{"has_mito": 1,"channels": {"neurites":0, "mito":1},"input_img_fmt": ".ims","neurite_seg_path": "/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/ml_models/20250613-pvdseg.pth","mito_seg_path": "/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/ml_models/20260117-mitoseg.pth","classifier_path": "/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/ml_models/class-3.joblib"}
