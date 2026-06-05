@@ -24,10 +24,9 @@ from sklearn.decomposition import PCA
 import random
 from scipy.spatial import KDTree
 
-#os.chdir('/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/') # Set working dir to repo dir
 import sys
-sys.path.append('./ml_models')
-sys.path.append('./modules')
+sys.path.append('./ml_models') # Add models dir to sys
+sys.path.append('./modules') # Add module dir to sys for custom module import
 import pvd_processing as pvd
 import pvd_plots
 import models
@@ -40,7 +39,6 @@ HAS_MITO = True if HAS_MITO == 1 else 0
 NEURITE_SEG_PATH = payload.get("neurite_seg_path")
 MITO_SEG_PATH = payload.get("mito_seg_path")
 CLASSIFIER_PATH = payload.get("classifier_path")
-
 
 # Load ML models
 neurite_seg_path = Path(NEURITE_SEG_PATH)
@@ -65,6 +63,8 @@ classifier.load_model(CLASSIFIER_PATH)
 Collect user arguments passed to the command line.
 dataset_path: directory to dataset of raw images
 --dry-run: add if performing a dry run (won't make/modify anything')
+--ngeno: number of genotypes in dataset
+--nage: number of timepoints in dataset
 """
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -76,23 +76,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
-
-def already_exists(filepath):
+"""Determine if a given file exists."""
+def already_exists(filepath: str) -> bool:
     filepath = Path(filepath)
     if filepath.exists():
         return True
     else:
         return False
 
-# Function
-def img_to_branches(img_path, neurite_seg_model, mito_seg_model, compute_device, classifier):
+"""
+Process an image into data on its branches and mitochondria.
+Inputs:
+    img_path = path to the image as a string
+    neurite_seg_model = loaded ML model for neurite segmentation
+    mito_seg_model = loaded ML model for mitochondria segmentation, set to None if no mito channel available
+    compute_device = specifies device to use for the ML models
+    classifier = loaded random forest model for neurite classification
+Ouputs:
+    branch_stats = pd.Dataframe of each segmented branch and associated meaasurements or None if the data already exists
+    mito_stats = pd.Dataframe of each mitochondrial focus and associated meaasurements or None if the data already exists or no mito channel available
+    node_data = pd.Dataframe of each node in a network representing the neurites and its associated meaasurements or None if the data already exists
+"""
+def img_to_branches(
+        img_path: str, 
+        neurite_seg_model: models.AttentionUNet, 
+        mito_seg_model: models.AttentionUNet, 
+        compute_device: torch.device, 
+        classifier: pc1.PVDNeuriteClassifier
+        ):
     # Manage file paths
-    #coord_path = img_path.replace('_Straightened.tif','.npy')
-    #straightened_path = img_path.replace('squished', 'Straightened')
     mip_path = img_path.replace('Straightened', 'mip')
     mask_path = img_path.replace('Straightened', 'seg')
     mask3d_path = img_path.replace('Straightened', 'seg3d')
-    mito_straightened_path = img_path.replace('Straightened', 'mito_Straightened')
+    if mito_seg_model is not None:
+        mito_straightened_path = img_path.replace('Straightened', 'mito_Straightened')
     straightened = tifffile.imread(img_path)
     
     # Step 1: Make max intensity projection
@@ -153,47 +170,50 @@ def img_to_branches(img_path, neurite_seg_model, mito_seg_model, compute_device,
         
         branch_stats = pvd.reconstructed_with_stats(fragments, mip)
         print('Step 3c completed successfully:\nReconstruct fragments into branches.\n')
-        
-    # Step 4: Process mito image w/ neurite mask
-    if already_exists(img_path.replace('Straightened', 'mito_rmbg')):
-        mito_rmbg = tifffile.imread(img_path.replace('Straightened', 'mito_rmbg'))
-        print('Step 4 already completed:\nProcess mito image for segmentation.\n')
-    else:    
-        mask3d = tifffile.imread(mask3d_path)
-        mito_straightened = tifffile.imread(mito_straightened_path)
-        mito_rmbg = pvd.process_mito(mito_straightened, mask3d)
-        tifffile.imwrite(img_path.replace('Straightened', 'mito_rmbg'), 
-                         mito_rmbg, compression = 'lzw')
-        print('Step 4 completed successfully:\nProcess mito image for segmentation.\n')
-        
-    # Step 5: Segment mitochondria
-    if already_exists(img_path.replace('Straightened', 'mito_seg')):
-        mito_seg = tifffile.imread(img_path.replace('Straightened', 'mito_seg'))
-        print('Step 5 already completed:\nSegment mitochondria.\n')
-    else:
-        mito_seg = pvd.get_big_mask(mito_rmbg, 
-                                    model = mito_seg_model, 
-                                    compute_device = compute_device, 
-                                    threshold = 0.2)
-        mito_seg = np.uint8(mito_seg)
-        tifffile.imwrite(img_path.replace('Straightened', 'mito_seg'), 
-                         mito_seg, compression = 'lzw')
-        print('Step 5 completed successfully:\nSegment mitochondria.\n')
     
-    # Step 6: Generate mito data
-    if already_exists(img_path.replace('Straightened.tif', 'mito.csv')):
-        print('Step 6 already completed:\nGenerate mito data.\n')
+    if mito_seg_model is not None:    
+        # Step 4: Process mito image w/ neurite mask
+        if already_exists(img_path.replace('Straightened', 'mito_rmbg')):
+            mito_rmbg = tifffile.imread(img_path.replace('Straightened', 'mito_rmbg'))
+            print('Step 4 already completed:\nProcess mito image for segmentation.\n')
+        else:    
+            mask3d = tifffile.imread(mask3d_path)
+            mito_straightened = tifffile.imread(mito_straightened_path)
+            mito_rmbg = pvd.process_mito(mito_straightened, mask3d)
+            tifffile.imwrite(img_path.replace('Straightened', 'mito_rmbg'), 
+                             mito_rmbg, compression = 'lzw')
+            print('Step 4 completed successfully:\nProcess mito image for segmentation.\n')
+            
+        # Step 5: Segment mitochondria
+        if already_exists(img_path.replace('Straightened', 'mito_seg')):
+            mito_seg = tifffile.imread(img_path.replace('Straightened', 'mito_seg'))
+            print('Step 5 already completed:\nSegment mitochondria.\n')
+        else:
+            mito_seg = pvd.get_big_mask(mito_rmbg, 
+                                        model = mito_seg_model, 
+                                        compute_device = compute_device, 
+                                        threshold = 0.2)
+            mito_seg = np.uint8(mito_seg)
+            tifffile.imwrite(img_path.replace('Straightened', 'mito_seg'), 
+                             mito_seg, compression = 'lzw')
+            print('Step 5 completed successfully:\nSegment mitochondria.\n')
+        
+        # Step 6: Generate mito data
+        if already_exists(img_path.replace('Straightened.tif', 'mito.csv')):
+            print('Step 6 already completed:\nGenerate mito data.\n')
+            mito_stats = None
+        else:
+            mito_stats = pvd.make_mito_df(mito_seg, branch_stats)
+            print('Step 6 completed successfully:\nGenerate mito data.\n')
+    else:
         mito_stats = None
-    else:
-        mito_stats = pvd.make_mito_df(mito_seg, branch_stats)
-        print('Step 6 completed successfully:\nGenerate mito data.\n')
-    
+        
     if branch_stats is None:
         print('Already generated branch data!')
     if node_data is None:
         print('Already generated node data!')
     if mito_stats is None:
-        print('Already generated mito data!')
+        print('Already generated mito data or no mito channel available!')
     
     #print('Image analysis complete.\n')
     
