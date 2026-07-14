@@ -6,36 +6,56 @@ import numpy as np
 
 
 class ImarisReader:
-    def __init__(self, file_path):
+    """
+    Initialize ImarisReader class by supplying a file path to read.
+    Loads the corresponding file and its metadata.
+    """
+    def __init__(self, file_path: str):
         self.file_path = file_path
         self.file = None
         self.metadata = {}
         self._open_file()
         self._read_metadata()
 
+    """
+    Open the ims file at the filepath of the ImarisReader.
+    """
     def _open_file(self):
         self.file = h5py.File(self.file_path, "r")
-
+    
+    """
+    Returns attribute based on its type.
+    """
     def _decode_attr(self, attr):
+        # If binary encoded, read the text it encodes as utf-8
         if isinstance(attr, bytes):
             return attr.decode("utf-8")
+        # If an array of dtype "S", return as a string
         elif isinstance(attr, np.ndarray) and attr.dtype.kind == "S":
             return attr.astype(str)
+        # Otherwise, return as is
         return attr
 
+    """
+    Given a group within the raw image metadata, return its key value pairs in a dict.
+    """
     def _read_attrs(self, group):
         attrs = {}
 
         for key, value in group.attrs.items():
             decoded_value = self._decode_attr(value)
-
+            # If decoded value is an array
             if isinstance(decoded_value, np.ndarray):
+                # If array is dtype "U" or "S", join values into a single string
                 if decoded_value.dtype.kind in ["U", "S"]:
                     attrs[key] = "".join(decoded_value)
+                # If size 1, just get value
                 elif decoded_value.size == 1:
                     attrs[key] = decoded_value.item()
+                # If larger size than 1, make into a list
                 else:
                     attrs[key] = decoded_value.tolist()
+            # Otherwise, just add key value pair to attrs
             else:
                 attrs[key] = decoded_value
 
@@ -51,12 +71,19 @@ class ImarisReader:
 
         return attrs
 
+    """
+    Get number of image channels, which is not explicitly stated in raw metadata.
+    """
     def _count_channels(self):
         dataset_info = self.file["DataSetInfo"]
+        # Look for keys with "Channel" in their name and increase channel count for each one
         return sum(
             1 for key in dataset_info.keys() if key.startswith("Channel ")
         )
 
+    """
+    Given a dict on timepoints, return them in standard format in a list.
+    """
     def _parse_timepoints(self, time_info_attrs):
         timepoints = []
         i = 1
@@ -73,10 +100,15 @@ class ImarisReader:
                 )
             i += 1
         return timepoints
-
+    
+    """
+    Given a list of timepoints, find the average interval between frames in seconds.
+    """
     def _calculate_intervals(self, timepoints):
+        # Need at least 2 timepoints to compute invervals
         if len(timepoints) < 2:
             return None
+        # Differences between consecutive points, in seconds
         intervals = [
             (timepoints[i] - timepoints[i - 1]).total_seconds()
             for i in range(1, len(timepoints))
@@ -85,6 +117,17 @@ class ImarisReader:
         avg_clipped = "{:.3f}".format(avg_interval)
         return float(avg_clipped)
 
+    """
+    Take metadata from the image file and store it in self.metadata.
+    Format of self.metadata:
+        {
+        'image': {'size_x': , 'size_y': , 'size_z': , 'unit': , 'description': , 'recording_date': ,
+                  'num_channels': , 'image_origin': , 'image_extent': , 'pixel_sizes': },
+        'channels': [one dict per channel of the form 
+            {'name': , 'description': , 'emission_wavelength': , 'excitation_wavelength': } ],
+        'time_info': {'num_timepoints': , 'timepoints': , 'interval': }
+        }
+    """
     def _read_metadata(self):
         # Read DataSetInfo metadata
         dataset_info = self.file["DataSetInfo"]
@@ -94,7 +137,7 @@ class ImarisReader:
         image_attrs = self._read_attrs(image)
         num_channels = self._count_channels()
 
-        # calculate pixel sizes
+        # Calculate pixel sizes in um
         origin_x = image_attrs["ExtMin0"]
         origin_y = image_attrs["ExtMin1"]
         origin_z = image_attrs["ExtMin2"]
@@ -107,7 +150,8 @@ class ImarisReader:
         dx = float("{:.4f}".format(dx))
         dy = float("{:.4f}".format(dy))
         dz = float("{:.4f}".format(dz))
-
+        
+        # metadata "image" key points to a dict of metadata of the whole image
         self.metadata["image"] = {
             "size_x": image_attrs["X"],
             "size_y": image_attrs["Y"],
@@ -121,26 +165,18 @@ class ImarisReader:
             "pixel_sizes": (dx, dy, dz),
         }
 
-        # Channel metadata
+        # Channel metadata (info specific to each channel)
         self.metadata["channels"] = []
         for i in range(self.metadata["image"]["num_channels"]):
             channel = dataset_info[f"Channel {i}"]
             channel_attrs = self._read_attrs(channel)
-            self.metadata["channels"].append(
-                {
+            self.metadata["channels"].append({
                     "name": channel_attrs["Name"],
                     "description": channel_attrs["Description"],
-                    #"color": [
-                    #    float(x) for x in channel_attrs["color"].split()
-                    #],
-                    "emission_wavelength": channel_attrs.get(
-                        "LSMEmissionWavelength"
-                    ),
-                    "excitation_wavelength": channel_attrs.get(
-                        "LSMExcitationWavelength"
-                    ),
-                }
-            )
+                    #"color": [float(x) for x in channel_attrs["color"].split()],
+                    "emission_wavelength": channel_attrs.get("LSMEmissionWavelength"),
+                    "excitation_wavelength": channel_attrs.get("LSMExcitationWavelength")
+                })
 
         # Time info
         time_info = dataset_info["TimeInfo"]
@@ -154,15 +190,21 @@ class ImarisReader:
             "interval": self._calculate_intervals(timepoints),
         }
 
+    """Returns metadata."""
     def get_metadata(self):
         return self.metadata
 
+    """Get available resolution levels of the image."""
     def get_resolution_levels(self):
+        # Each key in dataset is a resolution level
         return list(self.file["DataSet"].keys())
 
-    def get_image_data(
-        self, resolution_level=0, time_point=0, channel=0, return_array=False
-    ):
+    """
+    ***
+    Lookup the data corresponding to a given channel at a given timepoint and 
+    given resolution level. Optionally return the image array.
+    """
+    def get_image_data(self, resolution_level=0, time_point=0, channel=0, return_array=False):
         dataset_path = (
             f"/DataSet/ResolutionLevel {resolution_level}/"
             f"TimePoint {time_point}/Channel {channel}/Data"
@@ -173,7 +215,11 @@ class ImarisReader:
             return np.array(dataset)
 
         return dataset
-
+    
+    """
+    Get a 'histogram' of data corresponding to a given channel at a given timepoint 
+    and given resolution level.
+    """
     def get_histogram(self, resolution_level=0, time_point=0, channel=0):
         histogram_path = (
             f"/DataSet/ResolutionLevel {resolution_level}/"
@@ -181,17 +227,18 @@ class ImarisReader:
         )
         return np.array(self.file[histogram_path])
 
+    """
+    Iterator that yields 3D chunks of the image data for all channels.
+
+    :param time_point: The time point to read from
+    :param chunk_size: The size of each chunk (z, y, x)
+    :param overlap: The overlap between chunks (z, y, x)
+    :yield: A tuple containing the chunk coordinates and the chunk data for all channels
+    """
     def get_chunk_iterator(
         self, time_point=0, chunk_size=(64, 512, 512), overlap=(0, 0, 0)
     ):
-        """
-        Iterator that yields 3D chunks of the image data for all channels.
-
-        :param time_point: The time point to read from
-        :param chunk_size: The size of each chunk (z, y, x)
-        :param overlap: The overlap between chunks (z, y, x)
-        :yield: A tuple containing the chunk coordinates and the chunk data for all channels
-        """
+        
         # Get the number of channels and image dimensions
         num_channels = self.metadata["image"]["num_channels"]
         image_size = (
@@ -236,15 +283,18 @@ class ImarisReader:
                         combined_chunk,
                     )
 
+    """Print gathered image metadata."""
     def info(self):
         pprint(self.metadata, width=80, compact=True)
 
+    """Close the ims file."""
     def close(self):
         if self.file:
             self.file.close()
 
     def __enter__(self):
         return self
-
+    
+    """Wraps close function."""
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()

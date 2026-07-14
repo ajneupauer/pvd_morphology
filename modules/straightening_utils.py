@@ -5,33 +5,47 @@ from scipy.signal import convolve2d
 from scipy.spatial.distance import cdist
 from scipy import interpolate
 
-# kernel for detecting endpoints in 2D skeletonized image
+"""kernel for detecting endpoints in 2D skeletonized image"""
 endpoint_kernel = np.array([[1, 1, 1], [1, 10, 1], [1, 1, 1]], dtype=np.uint8)
 
-
-# internal function used in trimming skeletonized image
-def __get_last_coordinates(dict_endpoints):
+"""
+Gives the most recently added endpoints of a dictionary of retracting branches.
+In this dictionary, each value corresponds to a single branch (see trim_skeleton_to_endpoints).
+    {0: [(y1, x1), (y2, x2), ..., (yi, xi)], 1: [(y1, x1), (y2, x2), ..., (yi, xi)], ...}
+    *lists start from initial endpoints and move inwards
+Output gives array[(yi, xi), (yi, xi), ...]
+"""
+def __get_last_coordinates(dict_endpoints: dict) -> np.ndarray:
     N = len(dict_endpoints.keys())
     return np.array([dict_endpoints[i][-1] for i in range(N)])
 
-
-def __find_endpoints(img):
+"""
+Find endpoints in a skeleton via convolution.
+Gives a 1D array for y and x coords where there is an endpoint:
+    (array[y1, y2, ...], array[x1, x2, ...])
+"""
+def __find_endpoints(img: np.ndarray) -> tuple[np.ndarray]:
+    # Convolve skeleton with endpoint_kernel
     endpt_response = convolve2d(
         img.astype(np.uint8), endpoint_kernel, mode="same"
     )
+    # Endpoint has centerpoint (10) plus one neighbor (1)
     endpts = np.where(endpt_response == 11)
     return endpts
 
-
-def trim_skeleton_to_endpoints(skelimg, n_ends=2):
-    """function to 'trim' skeletonized binary mask
-
-    Shorter 'branches' are eliminated, retaining only the longest
-    end-to-end skeleton. This is done by iteratively finding all
-    endpoints and eliminating them until two remains.
-
-    """
+"""
+function to 'trim' skeletonized binary mask:
+Shorter 'branches' are eliminated, retaining only the longest
+end-to-end skeleton. This is done by iteratively finding all
+endpoints and eliminating them until two remain.
+"""
+def trim_skeleton_to_endpoints(skelimg: np.ndarray, n_ends=2) -> tuple[np.ndarray]:
     epts = __find_endpoints(skelimg)
+    # Build dict to track retracting branches, where each value contains pts of a single branch
+    # Pts listed from endpoints towards more proximal points
+    # {0: [(y1, x1), (y2, x2), ...], 1: [(y1, x1), (y2, x2), ...], ...}
+    # Initially, seed retracting branches with initial endpts, so we have
+    # {0: [endpt], 1: [endpt], ...}
     dict_eps = {i: [pt] for i, pt in enumerate(list(zip(*epts)))}
     wrk = skelimg.copy()
 
@@ -41,14 +55,19 @@ def trim_skeleton_to_endpoints(skelimg, n_ends=2):
         return skelimg, epts
 
     # otherwise, we prune to retain only the longest skeleton
-    elif len(epts) > n_ends:
+    # !!! previously: elif len(epts) > n_ends:
+    elif len(epts[0]) > n_ends:
         while len(epts[0]) > n_ends:
+            # Erase current endpoints
             wrk[epts] = 0
             a1 = __get_last_coordinates(dict_eps)
+            # Find new endpoints after erosion/retraction by 1 px
             epts = __find_endpoints(wrk)
             a2 = np.array(epts).T
+            # Match new endpoints to previous endpoints
             pwdist = cdist(a1, a2)
             eid_ = pwdist.argmin(axis=0)
+            # Append new endpoints to endpts dict to track retracted branches
             for id_, yx in zip(eid_, a2):
                 dict_eps[id_].append((yx[0], yx[1]))
 
@@ -65,55 +84,58 @@ def trim_skeleton_to_endpoints(skelimg, n_ends=2):
     else:
         return None, []
 
+"""
+routine to sort y,x coordinates of skeletonized edge:
+The sorting starts from one endpoint and follows the single pixel neighbor
+all the way to the other end.
 
-def sort_edge_coords(skeletonized_edge, endpoint):
-    """routine to sort y,x coordinates of skeletonized edge
+Args:
+    skeletonized_edge (2-d bool array): skeletonized edge image
+    endpoint (2-tuple of y,x): endpoint coordinate
 
-    The sorting starts from one endpoint and follows the single pixel neighbor
-    all the way to the other end.
-
-    Args:
-        skeletonized_edge (2-d bool array): skeletonized edge image
-        endpoint (2-tuple of y,x): endpoint coordinate
-
-    Returns:
-        2-d array (N x 2), rc coordinate
-
-    """
-
+Returns:
+    2-d array (N x 2), rc coordinate
+"""
+def sort_edge_coords(skeletonized_edge: np.ndarray, endpoint: tuple) -> np.ndarray:
+    
     ydir = np.array([[-1, -1, -1], [0, 0, 0], [1, 1, 1]])
     xdir = np.array([[-1, 0, 1], [-1, 0, 1], [-1, 0, 1]])
     pos = np.array(endpoint)
 
-    numel = skeletonized_edge.sum()
-
-    wrkimg = skeletonized_edge.copy()
+    numel = skeletonized_edge.sum() # Number of 1 pts in skeleton
+    wrkimg = skeletonized_edge.copy() # Save working copy of skeleton
 
     # preallocate output array
     sorted_edge = np.zeros((numel, 2), dtype=int)
 
+    # Set first row in the output array to current position (supplied endpoint) 
     curpos = pos.copy()
     sorted_edge[0, :] = curpos
+    
     # define pixel counter and start loop
     i = 0
 
     while True:
         i += 1
-        wrkimg[curpos[0], curpos[1]] = 0
-        sbox = wrkimg[
-            curpos[0] - 1 : curpos[0] + 2, curpos[1] - 1 : curpos[1] + 2
-        ]
+        wrkimg[curpos[0], curpos[1]] = 0 # Erase current pt to avoid revisiting
+        # Get 3 x 3 neighborhood around current pt; stop loop if sums to 0 (other end reached)
+        sbox = wrkimg[curpos[0] - 1 : curpos[0] + 2, curpos[1] - 1 : curpos[1] + 2]
         if sbox.sum() == 0:
             break
-        # move current position
-        curpos[0] += ydir[sbox][0]
-        curpos[1] += xdir[sbox][0]
-        sorted_edge[i, :] = curpos
+        # Take a step along the path
+        curpos[0] += ydir[sbox][0] # y offset from current pt (returns values where sbox == True)
+        curpos[1] += xdir[sbox][0] # x offset from current pt
+        sorted_edge[i, :] = curpos # Add new point to output
 
     return sorted_edge
 
-
-def compute_resampling_coordinates(spline_params_file, Nz, override_scale = None):
+"""
+Build the 3D sampling grid used to "straighten" a curved 3D volume along a precomputed centerline spline.
+Spline comes from the .npy file generated by the GUI opened by generate_coordinates.py.
+"""
+# !!! Should redo arguments so scale is just chosen by the user, default = 4
+def compute_resampling_coordinates(spline_params_file: str, Nz: int, override_scale = None) -> tuple:
+    # Load data from the .npy file
     path_params = np.load(spline_params_file, allow_pickle=True).item()
     if override_scale is None:
         scale = path_params["bin_factor"]
@@ -122,13 +144,13 @@ def compute_resampling_coordinates(spline_params_file, Nz, override_scale = None
     spl = path_params["central_spline"]
     worm_length = path_params["downscaled_worm_length"]
 
+    # form array of spline coordinates scaled up to the target resolution
     t = np.linspace(0, 1, num=int(worm_length * scale))
 
     cx, cy = interpolate.splev(t, spl)
     cx *= scale
     cy *= scale
 
-    # form array of coordinate for convenience
     curve2d = np.stack((cy, cx), axis=1)
 
     # compute (normalized) tangent vectors
@@ -150,27 +172,21 @@ def compute_resampling_coordinates(spline_params_file, Nz, override_scale = None
     worm_height = Nz
 
     # generate axial sampling planes
+    # Extend normals to half the worm width in both directions
     u = np.linspace(-worm_width / 2, worm_width / 2, worm_width)
-    v = np.arange(Nz)
+    v = np.arange(Nz) # from first to final plane
     U, V = np.meshgrid(u, v)
 
-    # compute rectangular mesh (worm_length, Nz, worm_width)
+    # compute rectangular mesh (y, z, x)
     Z_grid = (
         curve3d[:, None, None, 0]
         + normals3d[:, None, None, 0] * U[None, :, :]
         + V[None, :, :]
     )
+    Y_grid = (curve3d[:, None, None, 1] + normals3d[:, None, None, 1] * U[None, :, :])
+    X_grid = (curve3d[:, None, None, 2] + normals3d[:, None, None, 2] * U[None, :, :])
 
-    Y_grid = (
-        curve3d[:, None, None, 1] + normals3d[:, None, None, 1] * U[None, :, :]
-    )
-
-    X_grid = (
-        curve3d[:, None, None, 2] + normals3d[:, None, None, 2] * U[None, :, :]
-    )
-
-    # for nicer reshaping, reshape to our output coordinate where we want
-    # (Nz, worm_length, worm_width)
+    # Reshape our output coordinates to standard image conventions (z, y, x)
     Z_grid = np.transpose(Z_grid, axes=(1, 0, 2))
     Y_grid = np.transpose(Y_grid, axes=(1, 0, 2))
     X_grid = np.transpose(X_grid, axes=(1, 0, 2))
