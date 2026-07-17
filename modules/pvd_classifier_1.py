@@ -285,8 +285,7 @@ class PVDNeuriteClassifier:
                 'length': row['length'],
                 'orientation': row['orientation'],
                 'curvature': row['curvature'],
-                # !!! Maybe this is important?
-                #'tortuosity': row['tortuosity'],
+                'tortuosity': row['tortuosity'],
                 'waviness': row['waviness'],
                 'horizontal_likely': hNess > 0.5,
                 'relative_y': midpt_y / skeleton.shape[0],
@@ -345,7 +344,7 @@ class PVDNeuriteClassifier:
         feature_names = [
             'orientation',
             'curvature',
-            #'tortuosity',
+            'tortuosity',
             'waviness',
             'horizontal_likely',
             'relative_y',
@@ -389,7 +388,7 @@ class PVDNeuriteClassifier:
     Visualize the results of the model classifying a neurite mask.
     Specify an image, which will set the base layer of the visual.
     """
-    def visualize(self, image_path: str, predictions=None) -> matplotlib.figure.Figure:
+    def visualize(self, image_path: str, predictions=None):# -> matplotlib.figure.Figure:
         
         # Load base image for visualization
         image = io.imread(image_path)

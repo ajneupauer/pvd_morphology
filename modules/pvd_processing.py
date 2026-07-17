@@ -11,7 +11,6 @@ from pathlib import Path
 import seaborn as sns
 import matplotlib.pyplot as plt
 import scipy
-from scipy import interpolate
 import numpy as np
 import scipy.ndimage as ndi
 import tifffile
@@ -22,6 +21,7 @@ import skimage
 from scipy.spatial import cKDTree
 from collections import defaultdict
 import networkx as nx
+from scipy.interpolate import splprep, splev
 
 import sys
 sys.path.append('./modules')
@@ -82,7 +82,7 @@ Use a UNet model to produce a binary mask of a small 2D image.
 """
 def get_mask(
         image: np.ndarray, 
-        model: models.AttentionUNet, 
+        model, 
         compute_device: torch.device, 
         threshold = None
         ) -> np.ndarray:
@@ -130,7 +130,7 @@ Runs each slice of the stack through the UNet model to get a 3D mask.
 """
 def get_mask3d(
         image3d: np.ndarray, 
-        model: models.AttentionUNet, 
+        model, 
         compute_device: torch.device, 
         threshold = None
         ) -> np.ndarray:
@@ -188,52 +188,67 @@ def get_big_mask3d(big_img, model, compute_device, threshold = None):
 
 
 """Part II: Neurite Classification"""
-# Classify branches
-# !!! Remove once classifier is retrained and replace with branch_geom() from pvd_classifier_1.py
-def branch_geom(branch, interval = 7):
-    dys = []
-    dxs = []
-    angles = []
-    
-    for n in range(len(branch) // interval):
-        startpt = branch[interval * n]
-        endpt = branch[interval * n + interval - 1]
-        dy, dx = startpt[0] - endpt[0], endpt[1] - startpt[1]
-        angles.append(np.arctan2(dy, dx) * 180 / np.pi)
-        dys.append(dy)
-        dxs.append(dx)
-    
-    mean_dy = np.mean(dys)
-    mean_dx = np.mean(dxs)
-    
-    if len(branch) >= 2 * interval:
-        angle_diffs = []
-        sign = None
-        sign_switches = 0
-        
-        for i in range(len(angles) - 1):
-            delta_angle = angles[i + 1] - angles[i]
-            if delta_angle >= 0:
-                new_sign = 'pos'
-            else: 
-                new_sign = 'neg'
-            if sign is not None and sign != new_sign:
-                sign_switches += 1
-            sign = new_sign
-            angle_diff = min(abs(delta_angle), 360 - abs(delta_angle))
-            angle_diffs.append(angle_diff)
 
-        curvature = np.mean(angle_diffs)
-        waviness = curvature * sign_switches / len(branch)
-    else:
-        curvature = 0
-        waviness = 0
-        
-    mean_orientation = np.arctan2(mean_dy, mean_dx) * 180 / np.pi
-    if mean_orientation < 0:
-        mean_orientation += 180
+"""
+Compute curvature and orientation of a branch using spline fitting.
+"""
+def orientation_curvature_via_spline(points: np.ndarray, s=0.1) -> tuple: # Use m - np.sqrt(2*m), m = # points
+    # Get spline
+    tck, u = splprep(points.T, s=s, k=3)
+    # Evaluate derivatives
+    velocity = np.array(splev(u, tck, der=1)).T
+    acceleration = np.array(splev(u, tck, der=2)).T
+    # Compute parametric curvature at each point
+    cross = velocity[:, 0] * acceleration[:, 1] - velocity[:, 1] * acceleration[:, 0]
+    curvature = cross / np.linalg.norm(velocity, axis=1)**3
+    # Compute orientations from tangent vectors at each point
+    angles = np.arctan2(velocity[:, 1], velocity[:, 0])
     
-    return (mean_orientation, curvature, waviness)
+    return angles, curvature
+
+"""
+Compute the length, average orientation, and three metrics on degree of meandering of a branch.
+    Length: each left/right up/down movement = 1, each diagonal movement = sqrt(2)
+    Average orientation: the orientation of the branch, on average
+    Curvature: average unsigned parametric curvature along the branch
+    Tortuosity: ratio of branch euclidean length to path length
+    Waviness: number of sign changes in parametric curvature, normalized by length
+"""
+def branch_geom(branch: list[tuple]) -> tuple:
+    branch = np.array(branch)
+    
+    # Compute length
+    length = 0
+
+    # Change in x and y at each point
+    # array([[delx1, delx2, ..., delxn], 
+    #       [dely1, dely2, ..., delyn]])
+    diffs = np.abs(np.diff(branch, axis=0))
+    
+    for i in range(diffs.shape[0]):
+        point = diffs[i, :]
+        # Apply dist formula for each step and add to total length
+        px_dist = np.sqrt(point[0]**2 + point[1]**2)
+        length += px_dist
+    
+    length = round(length)
+
+    # Euclidean length and tortuosity
+    euclidean_length = np.linalg.norm(np.array([branch[-1, 0] - branch[0, 0], branch[-1, 1] - branch[0, 1]]))
+    tortuosity = length / euclidean_length
+    
+    # Parametric curvature and waviness
+    s = branch.shape[0] - np.sqrt(2 * branch.shape[0]) # Recommended to use m - np.sqrt(2*m), m = # points
+    angles, curvature = orientation_curvature_via_spline(branch, s)
+    sign_changes = np.sum(np.diff(np.sign(curvature)) != 0)
+    waviness = sign_changes / length
+    mean_curve = np.mean(np.abs(curvature))
+    
+    # Handle angle wrapping for orientation mean
+    avg_orientation = np.arctan2(np.mean(np.sin(angles)), np.mean(np.cos(angles)))
+    avg_orientation = np.degrees(avg_orientation)
+    
+    return length, avg_orientation, mean_curve, tortuosity, waviness
 
 """
 Given predicted classifications and manual labels of neurites, calculate classification accuracy.
@@ -272,7 +287,7 @@ def classify_mask(mask: np.ndarray, maxProj: np.ndarray, model: pc1.PVDNeuriteCl
     results['length'] = branch_data['length']
     results['segment'] = branch_data['segment']
     # Reorder columns
-    segments = results.iloc[:, [0, 12, 10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11]]
+    segments = results.iloc[:, [0, 13, 12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]]
     
     return segments
 
@@ -436,13 +451,13 @@ and collect morphological stats on them into a new DataFrame.
 def reconstructed_with_stats(fragments: pd.DataFrame, maxProj: np.ndarray) -> pd.DataFrame:
     # 1: Reconstruct branches from each class
     prim_fragments = list(fragments[fragments['dendrite_type'] == 1]['segment'])
-    prim_branches = br.connect_segments(prim_fragments, threshold=20.0, max_step_ratio = 10.0)
+    prim_branches = br.connect_segments(prim_fragments, threshold=10.0, max_step_ratio = 6.5)
     sec_fragments = list(fragments[fragments['dendrite_type'] == 2]['segment'])
-    sec_branches = br.connect_segments(sec_fragments, threshold=20.0, max_step_ratio = 10.0)
+    sec_branches = br.connect_segments(sec_fragments, threshold=10.0, max_step_ratio = 6.5)
     tert_fragments = list(fragments[fragments['dendrite_type'] == 3]['segment'])
-    tert_branches = br.connect_segments(tert_fragments, threshold=20.0, max_step_ratio = 10.0)
+    tert_branches = br.connect_segments(tert_fragments, threshold=10.0, max_step_ratio = 6.5)
     quat_fragments = list(fragments[fragments['dendrite_type'] == 4]['segment'])
-    quat_branches = br.connect_segments(quat_fragments, threshold=20.0, max_step_ratio = 10.0)
+    quat_branches = br.connect_segments(quat_fragments, threshold=10.0, max_step_ratio = 6.5)
     
     # 2: Collect stats on each reconstructed branch
     branch_data = []
@@ -558,7 +573,7 @@ Get a 2D mask for each square chunk of the full image and concatenate them.
 """
 def get_big_mask(
         big_img: np.ndarray, 
-        model: models.AttentionUNet, 
+        model, 
         compute_device: torch.device, 
         threshold = None
         ) -> np.ndarray:
@@ -745,7 +760,7 @@ G : networkx.Graph
 node_data : pandas DataFrame
     Contains data on each node, including position, degree, and node type.
 """
-def reconstruct_graph_from_segments(df: pd.DataFrame, proximity_threshold=2) -> tuple[nx.Graph, pd.DataFrame]:
+def reconstruct_graph_from_segments(df: pd.DataFrame, proximity_threshold=10) -> tuple[nx.Graph, pd.DataFrame]:
     # Step 1: Extract all potential nodes (branch endpoints)
     endpoints = []
     for idx, row in df.iterrows():
@@ -929,14 +944,16 @@ def count_loops(G: nx.Graph):
                 component_cycles = []
                 for j, cycle in enumerate(cycle_basis):
                     cycle_length = len(cycle)
-                    results['cycle_lengths'].append(cycle_length)
-                    results['all_cycles'].append(cycle)
-                    component_cycles.append(cycle)
-                    #print(f"    Cycle {j+1}: {cycle_length} nodes")
+                    # !!!
+                    if cycle_length > 1:
+                        results['cycle_lengths'].append(cycle_length)
+                        results['all_cycles'].append(cycle)
+                        component_cycles.append(cycle)
                 
                 # Store cycles with their component
                 results['cycles_by_component'][i] = (component_cycles, list(component))
-                results['cycles_per_component'].append(len(cycle_basis))
+                # !!!
+                results['cycles_per_component'].append(len(component_cycles))
 
             # If cycles cannot be found for some reason, set component's # of cycles to 0    
             except nx.NetworkXError as e:
@@ -985,7 +1002,7 @@ def phenotype_stripchart(
         size = (10, 5), 
         ylimit = None, 
         dotsize = 8
-        ) -> matplotlib.figure.Figure:
+        ):
     # Initialize dictionary of features and corresponding plot titles and y-axis labels
     # Structure {'shortened_name':('trait_name_in_csv', 'Plot Title', 'Y-axis Label')}
     traits = {
@@ -1179,7 +1196,7 @@ Given a directory to an experiment, plot a histogram of branch positions over th
 Genotype/age and dendrite type must be specified.
 Data on position will be combined from all neuron images of a given genotype/age.
 """
-def plot_branch_dist(infolder: str | pathlib.Path, strain: str, dendrite_type: int) -> matplotlib.figure.Figure:
+def plot_branch_dist(infolder, strain: str, dendrite_type: int):
 
     exp_id = str(infolder).split('-')[-1]
     infolder = Path(infolder)

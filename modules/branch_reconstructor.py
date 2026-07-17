@@ -187,11 +187,23 @@ def extend_chain(
     chain = list(segments[start_seg])
     used = {start_seg}
     current_seg = start_seg
+    # Tracks whether current_seg is embedded in `chain` in reversed order
+    # relative to its raw point order. When a segment gets reversed, its
+    # raw 'start' and 'end' labels swap which physical endpoint is exposed
+    # at the growing tip -- so the direction filter must flip too.
+    current_reversed = False
     
     # Loop to look for valid connections from the most recently added segment and apply them
     while True:
         best_connection = None
         best_distance = float('inf')
+        
+        # If current_seg is embedded reversed, the endpoint exposed at the
+        # growing tip is the opposite of what `direction` would normally imply.
+        if current_reversed:
+            effective_direction = 'backward' if direction == 'forward' else 'forward'
+        else:
+            effective_direction = direction
         
         # Find the best valid connection
         for conn in connections[current_seg]: # Get all segments connecting to the current one
@@ -201,8 +213,9 @@ def extend_chain(
             if target_seg in used or target_seg in global_used:
                 continue
             
-            # Skip target segment if its connection type is invalid for the supplied direction
-            if not is_valid_direction(conn['type'], direction):
+            # Skip target segment if its connection type is invalid for the
+            # endpoint actually exposed at the growing tip
+            if not is_valid_direction(conn['type'], effective_direction):
                 continue
             
             # If we encounter a target with a smaller gap than the current one,
@@ -215,7 +228,10 @@ def extend_chain(
         if not best_connection:
             break
         
-        # Apply the connection (actually join the target to the growing chain)
+        # Apply the connection (actually join the target to the growing chain).
+        # apply_connection only needs the true growth direction (append vs.
+        # prepend) and needs_reverse, both already correct regardless of
+        # current_seg's own embedded orientation.
         target_seg = best_connection['target']
         new_chain = apply_connection(chain, segments[target_seg], best_connection, direction)
         
@@ -224,6 +240,7 @@ def extend_chain(
             chain = new_chain # update growing chain
             used.add(target_seg) # update used segments
             current_seg = target_seg # update current segment
+            current_reversed = best_connection['needs_reverse'] # track new segment's orientation
         # If it was not extended properly, stop extending
         else:
             break
