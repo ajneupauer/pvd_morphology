@@ -160,10 +160,16 @@ def img_to_branches(
         betweenness = pvd.calculate_betweenness_centrality(G)
         node_data['betweenness'] = betweenness
         # Compute number of loops in the network and add to nodes data
-        loops = [pvd.count_loops(G)['total_cycles']]
-        loops = loops + (len(node_data) - 1) * ['NA']
-        node_data['loops'] = loops
-    
+        counted_loops = pvd.count_loops(G)
+        loops = len(counted_loops['cycle_lengths'])
+        loops_4plus = sum([i > 3 for i in counted_loops['cycle_lengths']])
+        mean_cyc_length = np.mean(counted_loops['cycle_lengths'])
+        
+        node_data['loops'] = len(node_data) * ['NA']
+        node_data['loops'][0] = loops
+        node_data['loops'][1] = loops_4plus
+        node_data['loops'][2] = mean_cyc_length
+        
     # Make branches dataFrame if it hasn't yet been saved
     if already_exists(branches_path):
         print('Steps 3b-c already completed:\nCorrect and reconstruct fragments into branches.\n')
@@ -236,7 +242,7 @@ def img_to_branches(
     return branch_stats, mito_stats, node_data
 
 """Find the cell body position along the anterior-posterior axis."""
-def find_cellbody(fpath: str) -> int:
+def find_cellbody(fpath: str) -> tuple[int]:
     myImg = tifffile.imread(fpath)
     
     # Intensity profile along middle of the worm (A-P axis), averaged over the width (D-V axis)
@@ -260,9 +266,26 @@ def find_cellbody(fpath: str) -> int:
     for k in range(1, len(smooth_profile) - 1):
         if smooth_profile[k] > smooth_profile[k + 1] + 0.0001 and smooth_profile[k] > smooth_profile[k - 1] + 0.0001:
             peaks.append(smooth_profile[k])
-    # Take the cell body position to be where the highest peak occurs
+    # Take the cell body y position to be where the highest peak occurs
     breakpt = smooth_profile.index(max(peaks))
-    return breakpt + 50 # Add 50 to correct for 100 px sliding window
+    ypos = breakpt + 50 # Add 50 to correct for 100 px sliding window
+    
+    # Now do the same thing along the D-V axis
+    sub_img = myImg[ypos - 50: ypos + 50, :] # 100 px strip along D-V axis centered at cell body ypos
+    profile = []
+
+    for i in range(sub_img.shape[1]):
+        avg_intensity = np.mean(sub_img[:, i])
+        profile.append(avg_intensity)
+    
+    peaks = []
+    for k in range(1, len(profile) - 1):
+        if profile[k] > profile[k + 1] + 0.0001 and profile[k] > profile[k - 1] + 0.0001:
+            peaks.append(profile[k])
+
+    xpos = profile.index(max(peaks))
+    
+    return xpos, ypos
 
 """Given a list of neighbors for each branch, make a list of unique pairs that are neighbors."""
 def uniq_neighbor_pairs(neighbors: list[list]) -> list[tuple]:
@@ -335,9 +358,11 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
         genotype_age = Path(file).stem.split('_')[2:4]
         genotype_age = genotype_age[0] + '-' + genotype_age[1]
         # Get neuron length and cell body pos in proper units
-        cellbody_pct = 100 * cellbody / length # Cell body pos = % along A-P axis
+        cellbody_y_pct = 100 * cellbody[1] / length # Cell body pos = % along A-P axis
+        cellbody_x_pct = 100 * cellbody[0] / width # Cell body pos = % along D-V axis
+        
         length_um = round(length * 0.2096) # Length in units of microns
-        ant_length = round(cellbody * 0.2096) # Length anterior of cell body
+        ant_length = round(cellbody[1] * 0.2096) # Length anterior of cell body
         post_length = length_um - ant_length # Length posterior of cell body
         
 
@@ -377,7 +402,7 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
         # Get 2º A-P axis distribution info
         # If we're adjusting distributions, extract branch y positions relative to cell body
         if adj_branch_distributions: # + sign means posterior of cell body
-            y_pos = [y * 100 / length - cellbody_pct for y in list(sec['mean_y'])]
+            y_pos = [y * 100 / length - cellbody_y_pct for y in list(sec['mean_y'])]
             # Posterior branches have positive pct along A-P axis
             post_sec = sum(1 for y in y_pos if y > 0)
             ant_sec = len(y_pos) - post_sec
@@ -404,7 +429,7 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
         # Get 3º A-P axis distribution info
         # If we're adjusting distributions, extract branch y positions relative to cell body
         if adj_branch_distributions: # + sign means posterior of cell body
-            y_pos = [y * 100 / length - cellbody_pct for y in list(tert['mean_y'])]
+            y_pos = [y * 100 / length - cellbody_y_pct for y in list(tert['mean_y'])]
             # Posterior branches have positive pct along A-P axis
             post_tert = sum(1 for y in y_pos if y > 0)
             ant_tert = len(y_pos) - post_tert
@@ -412,6 +437,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
             y_pos = [y * 100 / length for y in list(tert['mean_y'])]
             post_tert = None
             ant_tert = None
+        tert_median = np.median(y_pos)
+        tert_skew = scs.skew(y_pos)
         
         # IV: Quaternary
         quat = data[data['dendrite_type'] == 4] # DataFrame of only quaternaries
@@ -435,7 +462,7 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
         # Get 4º A-P axis distribution info
         # If we're adjusting distributions, extract branch y positions relative to cell body
         if adj_branch_distributions: # + sign means posterior of cell body
-            y_pos = [y * 100 / length - cellbody_pct for y in list(quat['mean_y'])]
+            y_pos = [y * 100 / length - cellbody_y_pct for y in list(quat['mean_y'])]
             # Posterior branches have positive pct along A-P axis
             post_quat = sum(1 for y in y_pos if y > 0)
             ant_quat = len(y_pos) - post_quat
@@ -446,6 +473,18 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
         quat_median = np.median(y_pos)
         quat_skew = scs.skew(y_pos)
         
+        # Get 4º D-V axis distribution info
+        quat_lens_V = []
+        quat_lens_D = []
+        # Sort branches into dorsal or ventral depending on x position
+        for _idx, row in quat.iterrows():
+            if (row['mean_x'] / width) > 0.5: # right = dorsal
+                quat_lens_D.append(row['length'])
+            else: # left = ventral
+                quat_lens_V.append(row['length'])
+        # Mean length discrepancy between D/V sides, as pct of width
+        mean_diff_DV = np.mean(quat_lens_D) - np.mean(quat_lens_V)
+        mean_diff_DV = mean_diff_DV * 100 / width
         
         """PART THREE: COMPUTE GLOBAL STATS ON ENTIRE NEURITE NETWORK"""
         # I: Interbranch Angles And Contacts
@@ -592,7 +631,7 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
             quat_mito_ct = sum(branch_assignments == 4)
             
             # Get A-P axis position as % total length with the cell body position as 0%
-            y_pos = [y * 100 / length - cellbody_pct for y in list(mito_data['centroid_y'])]
+            y_pos = [y * 100 / length - cellbody_y_pct for y in list(mito_data['centroid_y'])]
             # Positive % for mito posterior of the cell body
             ant_mito_ct = sum(1 for y in y_pos if y < 0)
             post_mito_ct = tot_mito_ct - ant_mito_ct
@@ -618,7 +657,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'image': img_name,
                 'genotype-age': genotype_age,
                 'length': length_um,
-                'cellbody': cellbody_pct,
+                'cellbody_x': cellbody_x_pct,
+                'cellbody_y': cellbody_y_pct,
                 'prim-ct': prim_ct / length_um, # Normalize by neuron length
                 'prim-length': prim_length / length_um, # Normalize by neuron length
                 'prim-wavy': prim_wavy,
@@ -647,6 +687,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'tert-intensity': tert_intensity,
                 'tert-angle': tert_angle,
                 'tert-angle-sd': tert_angle_sd,
+                'tert-median': tert_median,
+                'tert-skew': tert_skew,
                 'post-tert': post_tert / post_length, # Normalize by posterior neuron length
                 'ant-tert': ant_tert / ant_length, # Normalize by anterior neuron length
                 'quat-ct': quat_ct / length_um, # Normalize by neuron length
@@ -661,6 +703,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'quat-skew': quat_skew,
                 'post-quat': post_quat / post_length, # Normalize by posterior neuron length
                 'ant-quat': ant_quat / ant_length, # Normalize by anterior neuron length
+                'dv-discrep': mean_diff_DV,
+                'dv-discrep-mag': abs(mean_diff_DV),
                 # Ct of each contact type expressed as % of total contacts
                 '12-contacts': 100 * contacts_12 / (contacts_12 + contacts_13 + contacts_14 + contacts_23 + contacts_24 + contacts_34),
                 '13-contacts': 100 * contacts_13 / (contacts_12 + contacts_13 + contacts_14 + contacts_23 + contacts_24 + contacts_34),
@@ -708,8 +752,10 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'num-degree-4+': num_high_degree / length_um, # Normalize by neuron length
                 'pct-degree-4+': 100 * num_high_degree / len(nodes_noterm), # What % of intersection nodes are degree 4+?
                 'mean-betweenness': np.mean(nodes_noterm['betweenness']),
-                'loop-ct': nodes['loops'][0],
-                
+                'loop-3plus': nodes['loops'][0],
+                'loop-4plus': nodes['loops'][1],
+                'mean-loop-length': nodes['loops'][2],
+                    
                 'mito-tot-ct': tot_mito_ct / length_um, # Normalize by neuron length
                 'mito-prim-ct': prim_mito_ct / length_um, # Normalize by neuron length
                 'mito-sec-ct': sec_mito_ct / length_um, # Normalize by neuron length
@@ -761,7 +807,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'image': img_name,
                 'genotype-age': genotype_age,
                 'length': length_um,
-                'cellbody': cellbody_pct,
+                'cellbody_x': cellbody_x_pct,
+                'cellbody_y': cellbody_y_pct,
                 'prim-ct': prim_ct / length_um, # Normalize by neuron length
                 'prim-length': prim_length / length_um, # Normalize by neuron length
                 'prim-wavy': prim_wavy,
@@ -790,6 +837,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'tert-intensity': tert_intensity,
                 'tert-angle': tert_angle,
                 'tert-angle-sd': tert_angle_sd,
+                'tert-median': tert_median,
+                'tert-skew': tert_skew,
                 'post-tert': post_tert / post_length, # Normalize by posterior neuron length
                 'ant-tert': ant_tert / ant_length, # Normalize by anterior neuron length
                 'quat-ct': quat_ct / length_um, # Normalize by neuron length
@@ -804,6 +853,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'quat-skew': quat_skew,
                 'post-quat': post_quat / post_length, # Normalize by posterior neuron length
                 'ant-quat': ant_quat / ant_length, # Normalize by anterior neuron length
+                'dv-discrep': mean_diff_DV,
+                'dv-discrep-mag': abs(mean_diff_DV),
                 # Ct of each contact type expressed as % of total contacts
                 '12-contacts': 100 * contacts_12 / (contacts_12 + contacts_13 + contacts_14 + contacts_23 + contacts_24 + contacts_34),
                 '13-contacts': 100 * contacts_13 / (contacts_12 + contacts_13 + contacts_14 + contacts_23 + contacts_24 + contacts_34),
@@ -851,7 +902,9 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'num-degree-4+': num_high_degree / length_um, # Normalize by neuron length
                 'pct-degree-4+': 100 * num_high_degree / len(nodes_noterm), # What % of intersection nodes are degree 4+?
                 'mean-betweenness': np.mean(nodes_noterm['betweenness']),
-                'loop-ct': nodes['loops'][0]
+                'loop-3plus': nodes['loops'][0],
+                'loop-4plus': nodes['loops'][1],
+                'mean-loop-length': nodes['loops'][2]
             })
         
     return pd.DataFrame(stats)
@@ -866,13 +919,13 @@ Inputs:
 def plot_all_features(data: pd.DataFrame, folder: str, mito = True):
     # List of all feature short names for plotting
     short_features = [
-        'ln', 'cb', 
+        'ln', 'cbx', 'cby',
         'ct1', 'ln1', 'wv1', 'tt1', 'cv1', 'it1', 'ag1', 'as1',
         'ct2', 'ln2', 'wv2', 'tt2', 'cv2', 'it2', 'ag2', 'as2', 'md2', 'sk2', 'pt2', 'at2',
-        'ct3', 'ln3', 'wv3', 'tt3', 'cv3', 'it3', 'ag3', 'as3', 'pt3', 'at3',
+        'ct3', 'ln3', 'wv3', 'tt3', 'cv3', 'it3', 'ag3', 'as3', 'md3', 'sk3', 'pt3', 'at3',
         'ct4', 'ln4', 'wv4', 'tt4', 'cv4', 'it4', 'ag4', 'as4', 'md4', 'sk4', 'pt4', 'at4',
         'cn12', 'cn13', 'cn14', 'cn23', 'cn24', 'cn34', 'im', 'is', 'ik', 'ad1', 'ad2', 'ad3', 'ad4', 'ad5', 'ad6', 'ad7', 'ad8', 'ad9', 'ad10', 'ad11', 'ad12', 'ad13', 'ad14', 'ad15', 'ad16', 'ad17', 'ad18', 'lr12', 'lr13', 'lr14', 'lr23', 'lr24', 'lr34', 'cr23', 'cr42', 'cr43',
-        'oo', 'tn', 'pt', 'id', 'ed', 'md', 'nd4', 'pd4', 'bt', 'lp',
+        'oo', 'tn', 'pt', 'id', 'ed', 'md', 'nd4', 'pd4', 'bt', 'lp3', 'lp4', 'll',
         'mct', 'mct1', 'mct2', 'mct3', 'mct4', 'mac', 'mpc', 'mbc', 'mbp', 'nn', 'rn', 'mec', 'mes', 'mek', 'mex', 'mxs', 'mxk', 'mpa', 'mps', 'mpk', 'mos', 'mdm', 'mds', 'mdk', 'msz', 'mss', 'msk', 'mja', 'mjs', 'mjk', 'mna', 'mns', 'mnk', 'meq', 'mqs', 'mqk', 'mpm', 'mms', 'mmk', 'mfd', 'mfs', 'mfk'
         ]
     if not mito:

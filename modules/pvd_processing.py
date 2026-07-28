@@ -1007,7 +1007,8 @@ def phenotype_stripchart(
     # Structure {'shortened_name':('trait_name_in_csv', 'Plot Title', 'Y-axis Label')}
     traits = {
         'ln':('length', 'Worm Length', 'Length ($\mu$m)'),
-        'cb':('cellbody', 'Cell Body Position Along the Anterior-Posterior Axis', 'Position (%)'),
+        'cbx':('cellbody', 'Cell Body Position Along the Dorsal-Ventral Axis', 'Position (%)'),
+        'cby':('cellbody', 'Cell Body Position Along the Anterior-Posterior Axis', 'Position (%)'),
         
         'ct1':('prim-ct', 'Number of Primary Dendrites', 'Count/$\mu$m'),
         'ln1':('prim-length', 'Cumulative Length of 1º Dendrites', 'Normalized Length'),
@@ -1039,6 +1040,8 @@ def phenotype_stripchart(
         'it3':('tert-intensity', 'Intensity of 3º Dendrites', 'a.u.'),
         'ag3':('tert-angle', 'Mean Orientation of 3º Dendrites', 'Degrees (º)'),
         'as3':('quat-angle-sd', 'SD of Orientations of 3º Dendrites', 'Degrees (º)'),
+        'md3':('tert-median', 'Median of 3º Distribution', 'Percent (%)'),
+        'sk3':('tert-skew', 'Skewness of 3º Distribution', 'Skewness'),
         'pt3':('post-tert', 'Number of Posterior 3º Dendrites', 'Count/$\mu$m'),
         'at3':('ant-tert', 'Number of Anterior 3º Dendrites', 'Count/$\mu$m'),
         
@@ -1101,7 +1104,9 @@ def phenotype_stripchart(
         'nd4': ('num-degree-4+', 'Number of Intersections with Degree > 3', 'Count/$\mu$m'),
         'pd4': ('pct-degree-4+', 'Percent of Intersections with Degree > 3', 'Percent (%)'),
         'bt': ('mean-betweenness', 'Mean Betweenness Centrality', 'NA'),
-        'lp': ('loop-ct', 'Number of Graph Loops', 'Count'),
+        'lp3': ('loop-3plus', 'Number of Graph Loops', 'Count'),
+        'lp4': ('loop-4plus', 'Number of Loops w/ 4+ Nodes', 'Count'),
+        'll': ('mean-loop-length', 'Mean Loop Length', 'Count of Nodes'),
         
         'mct': ('mito-tot-ct', 'Number of Mitochondrial Foci', 'Count/$\mu$m'),
         'mct1': ('mito-prim-ct', 'Number of 1º Mitochondrial Foci', 'Count/$\mu$m'),

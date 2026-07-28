@@ -31,122 +31,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("dataset_path", type=Path, help="Directory to dataset of raw images.")
     return parser.parse_args()
 
-"""
-Define the GUI panel for image masking.
-The user can set options for thresholding including:
-    Threshold method
-    Whether or not to fill mask holes
-    Blur radius
-    Remove mask objects below a specified size in px
-    Set open/close morphology operations
-    Set a manual intensity value for thresholding
-"""
-@magicgui(
-    call_button="generate mask",
-    image={"label": "image"},
-    method={"choices": ["triangle", "otsu", "yen", "li", "isodata"]},
-    fill_holes={"widget_type": "CheckBox"},
-    sigma={"min": 0, "max": 10, "step": 0.5},
-    min_size={"min": 0, "max": 1000, "step": 50},
-    morph_open={"min": 0, "max": 10, "step": 1},
-    morph_close={"min": 0, "max": 10, "step": 1},
-    use_manual_threshold={"widget_type": "CheckBox"},
-    manual_threshold={"min": 0, "max": 65535, "step": 1}
-)
-# Function to make mask based on user selected options in the GUI
-def threshold_image(
-    image: Image,
-    method: str = "otsu",
-    sigma: float = 10.0,
-    fill_holes: bool = True,
-    min_size: int = 500,
-    morph_open: int = 0,
-    morph_close: int = 10,
-    use_manual_threshold: bool = False,
-    manual_threshold: int = 100
-) -> LabelsData:
-    image_data = np.array(image.data)
-    
-    # Make a binary mask based on user input in GUI
-    if sigma > 0:
-        image_data = ndi.gaussian_filter(image_data, sigma)
-
-    if use_manual_threshold:
-        thres = manual_threshold
-    elif method == "triangle":
-        thres = sk.filters.threshold_triangle(image_data)
-    elif method == "otsu":
-        thres = sk.filters.threshold_otsu(image_data)
-    elif method == "yen":
-        thres = sk.filters.threshold_yen(image_data)
-    elif method == "li":
-        thres = sk.filters.threshold_li(image_data)
-    elif method == "isodata":
-        thres = sk.filters.threshold_isodata(image_data)
-
-    binary = image_data >= thres
-
-    if fill_holes:
-        binary = ndi.binary_fill_holes(binary)
-
-    if min_size > 0:
-        binary = sk.morphology.remove_small_objects(binary, min_size=min_size)
-
-    if morph_close > 0:
-        binary = sk.morphology.binary_closing(binary, sk.morphology.disk(morph_close))
-
-    if morph_open > 0:
-        binary = sk.morphology.binary_opening(binary, sk.morphology.disk(morph_open))
-
-    # Ensure mask consists of just one contiguous region
-    from skimage.measure import label, regionprops
-    labeled = label(binary)
-    num_components = labeled.max()
-
-    if num_components == 0:
-        mask = np.uint8(binary) 
-    elif num_components == 1: 
-        mask = np.uint8(binary)
-    else: # If there is more than one region, keep only the largest one
-        regions = regionprops(labeled)
-        largest_region = max(regions, key=lambda r: r.area)
-        binary = (labeled == largest_region.label)
-        mask = np.uint8(binary)
-
-    return mask
-
-"""
-Define the GUI panel for center line extraction.
-The user pushes a button to trigger center line extraction.
-"""
-@magicgui(call_button="Extract center line")
-def extract_center_line(label: LabelsData) -> LayerDataTuple:
-    mask = np.array(label.data) > 0
+def _extract_center_line(mask: np.ndarray):
+    """Skeletonize a binary mask (the user-drawn trace) and return sorted
+    (y, x) centerline coordinates."""
 
     if np.sum(mask) == 0:
-        raise ValueError("Mask is empty! Generate a mask first.")
+        raise ValueError("User trace is empty! Draw a line down the center of the worm first.")
 
     skeleton = sk.morphology.skeletonize(mask, method="lee") # Get center line
 
     if np.sum(skeleton) == 0:
-        raise ValueError("Skeletonization failed - mask may be too thin or small.")
+        raise ValueError("Skeletonization failed - trace may be too thin or small.")
 
     skeleton, epts = u.trim_skeleton_to_endpoints(skeleton) # Trim center line to fit within mask
 
     if skeleton is None:
-        raise ValueError("Skeleton trimming failed. The mask shape may be too complex.")
+        raise ValueError("Skeleton trimming failed. The trace shape may be too complex.")
 
     if len(epts) == 0:
-        raise ValueError("No skeleton endpoints found. The mask may be too blob-like.")
+        raise ValueError("No skeleton endpoints found. The trace may be too blob-like.")
 
-    sorted_yx = u.sort_edge_coords(skeleton, epts[0]) # Sort coordinates of center line to be in the correct order
-    return (sorted_yx, {"name": "center line", "shape_type": "path"}, "Shapes")
+    return u.sort_edge_coords(skeleton, epts[0]) # Sort coordinates of center line to be in the correct order
 
 """Initialize parameters for when the program starts up."""
+TRACE_LAYER_NAME = "user trace"
 small_files = []
 current_index = 0
 viewer = None
 current_image_layer = None
+current_trace_layer = None
 
 """Based on the current index, return the path for the output spline."""
 def get_output_path_for_current_file():
@@ -156,6 +69,7 @@ def get_output_path_for_current_file():
         base_name = current_file.stem.replace('_small', '')
         return current_file.parent / f"{base_name}.npy"
     return None
+
 
 """
 Define the GUI panel for generating a straightened preview.
@@ -167,12 +81,12 @@ The spline coordinates are adjusted based on user options and then saved upon pr
 @magicgui(
     call_button="straighten",
     image_layer={"label": "img"},
-    path_layer={"label": "path"},
+    trace_layer={"label": "trace"},
     width={"min": 10, "max": 500, "step": 5}
 )
 def resample_along_path(
     image_layer: Image,
-    path_layer: Shapes,
+    trace_layer: Labels,
     spline_output: Path = None,
     width: int = 100,
     subsample: int = 10,
@@ -180,34 +94,29 @@ def resample_along_path(
     scale: float = 8,
     flip_worm: bool = False,
 ) -> LayerDataTuple:
-    # Make a list of points from the center line layer
-    nshapes = len(path_layer.data)
-    opath = [
-        path_layer.data[n]
-        for n in range(nshapes)
-        if path_layer.shape_type[n] == "path"
-    ][0]
-    
+    mask = np.array(trace_layer.data) > 0
+    opath = _extract_center_line(mask)
+
     image = np.array(image_layer.data)
     
     # Set path for saving the spline data
     if spline_output is None or str(spline_output) == '' or str(spline_output) == '.':
         spline_output = get_output_path_for_current_file()
-    
+
     # Get length of the center line
     diffs = np.diff(opath, axis=0)
     segment_lengths = np.sum(np.sqrt(diffs**2), axis=1)
     path_length = segment_lengths.sum()
     N = round(path_length)
-
+    
     # Flip the image along A-P axis by reversing the order of points in the center line
     if flip_worm:
         opath = opath[::-1]
-    
+
     # Get interpolated spline based on the center line
     x = opath[::subsample, 1]
     y = opath[::subsample, 0]
-
+    
     spl, t_orig = interpolate.splprep([x, y], s=2)
 
     t_new = np.linspace(0, 1, N)
@@ -250,7 +159,7 @@ def resample_along_path(
 
     if spline_output is not None:
         np.save(spline_output, path_parameters, allow_pickle=True)
-    
+
     # Generate layers in the viewer for the straightened preview and the spline path
     subsampled_path = np.stack((yo, xo), axis=1)
 
@@ -274,7 +183,7 @@ def resample_along_path(
 
 """Load the image of a specified index."""
 def load_image(index):
-    global viewer, current_image_layer, current_index
+    global viewer, current_image_layer, current_trace_layer, current_index
 
     if index < 0 or index >= len(small_files): # Index canot be negative or exceed # of images
         return
@@ -289,7 +198,7 @@ def load_image(index):
         layers_to_remove = [layer for layer in viewer.layers]
         for layer in layers_to_remove:
             viewer.layers.remove(layer)
-        
+
         # Based on the image file name, make a short name to display in the GUI
         short_name = path.stem
         if '_small' in short_name:
@@ -297,7 +206,7 @@ def load_image(index):
         parts = short_name.split('_')
         if len(parts) >= 3:
             short_name = '_'.join(parts[-3:])
-
+            
         # Add image layer to the GUI and display the short name
         current_image_layer = viewer.add_image(
             image,
@@ -305,6 +214,15 @@ def load_image(index):
             contrast_limits=(100, 1500),
             gamma=0.25,
             name=short_name
+        )
+
+        # Blank labels layer for the user to draw a line down the center
+        # of the worm. The straighten widget skeletonizes this trace to
+        # extract the centerline automatically.
+        blank_trace = np.zeros(image.shape, dtype=np.uint8)
+        current_trace_layer = viewer.add_labels(
+            blank_trace,
+            name=TRACE_LAYER_NAME
         )
         
         # Top banner of GUI window gives path to loaded image and progress through entire image list
@@ -353,14 +271,12 @@ if __name__ == "__main__":
             current_index = int(user_input) - 1
             if current_index < 0 or current_index >= len(small_files): # Index canot be negative or exceed # of images
                 current_index = 0 # Force index = 0 if out of bounds
-        except ValueError: # Force index = 0 if there's an errors
+        except ValueError: # Force index = 0 if there's an error
             current_index = 0
 
     # Set up napari viewer with its widgets and buttons and load the current image
     viewer = napari.Viewer()
 
-    viewer.window.add_dock_widget(threshold_image, name="make mask")
-    viewer.window.add_dock_widget(extract_center_line, name="medial path")
     viewer.window.add_dock_widget(resample_along_path, name="straighten")
 
     viewer.window.add_dock_widget(previous_button, name="nav_prev", area="bottom")
