@@ -235,7 +235,10 @@ def branch_geom(branch: list[tuple]) -> tuple:
 
     # Euclidean length and tortuosity
     euclidean_length = np.linalg.norm(np.array([branch[-1, 0] - branch[0, 0], branch[-1, 1] - branch[0, 1]]))
-    tortuosity = length / euclidean_length
+    if euclidean_length == 0:
+        tortuosity = 0
+    else:
+        tortuosity = length / euclidean_length
     
     # Parametric curvature and waviness
     s = branch.shape[0] - np.sqrt(2 * branch.shape[0]) # Recommended to use m - np.sqrt(2*m), m = # points
@@ -676,7 +679,7 @@ def assign_mitochondria_to_branches(foci_data: pd.DataFrame, dendrite_df: pd.Dat
     for idx, row in dendrite_df.iterrows():
         # Add points in the branch to list of skeleton points 
         skeleton_coords = np.array(row['branch'])
-        all_skeleton_points.append(skeleton_coords * 2)
+        all_skeleton_points.append(skeleton_coords)
         # Store branch info for each point
         for i in range(len(skeleton_coords)):
             point_to_branch.append({
@@ -992,14 +995,15 @@ Given morphological profile data, plot values of a phenotype/feature for each gr
 Inputs:
     data: pandas DataFrame of morphological profiles
     trait: feature to plot, referred to by its short 2-4 character name
-    size: plot size in inches (height, width); default = (10, 5)
+    size: plot height in inches. Width is scaled based on # of genotypes/ages
     ylimit: bounds for the y-axis (lower, upper); default = None
     dotsize: size of the data points; default = 8
 """
 def phenotype_stripchart(
         data: pd.DataFrame, 
         trait: str, 
-        size = (10, 5), 
+        pairwise_tests = None,
+        size = 3, 
         ylimit = None, 
         dotsize = 8
         ):
@@ -1007,8 +1011,9 @@ def phenotype_stripchart(
     # Structure {'shortened_name':('trait_name_in_csv', 'Plot Title', 'Y-axis Label')}
     traits = {
         'ln':('length', 'Worm Length', 'Length ($\mu$m)'),
-        'cbx':('cellbody', 'Cell Body Position Along the Dorsal-Ventral Axis', 'Position (%)'),
-        'cby':('cellbody', 'Cell Body Position Along the Anterior-Posterior Axis', 'Position (%)'),
+        'ae':('prop', 'Anterior Extent', 'NA'),
+        'cbx':('cellbody-x', 'Cell Body Position Along the Dorsal-Ventral Axis', 'Position (%)'),
+        'cby':('cellbody-y', 'Cell Body Position Along the Anterior-Posterior Axis', 'Position (%)'),
         
         'ct1':('prim-ct', 'Number of Primary Dendrites', 'Count/$\mu$m'),
         'ln1':('prim-length', 'Cumulative Length of 1º Dendrites', 'Normalized Length'),
@@ -1039,7 +1044,7 @@ def phenotype_stripchart(
         'cv3':('tert-curve', 'Curvature of 3º Dendrites', 'NA'),
         'it3':('tert-intensity', 'Intensity of 3º Dendrites', 'a.u.'),
         'ag3':('tert-angle', 'Mean Orientation of 3º Dendrites', 'Degrees (º)'),
-        'as3':('quat-angle-sd', 'SD of Orientations of 3º Dendrites', 'Degrees (º)'),
+        'as3':('tert-angle-sd', 'SD of Orientations of 3º Dendrites', 'Degrees (º)'),
         'md3':('tert-median', 'Median of 3º Distribution', 'Percent (%)'),
         'sk3':('tert-skew', 'Skewness of 3º Distribution', 'Skewness'),
         'pt3':('post-tert', 'Number of Posterior 3º Dendrites', 'Count/$\mu$m'),
@@ -1057,6 +1062,8 @@ def phenotype_stripchart(
         'sk4':('quat-skew', 'Skewness of 4º Distribution', 'Skewness'),
         'pt4':('post-quat', 'Number of Posterior 4º Dendrites', 'Count/$\mu$m'),
         'at4':('ant-quat', 'Number of Anterior 4º Dendrites', 'Count/$\mu$m'),
+        'dv': ('dv-discrep', 'Dorsal/Ventral Discrepancy of 4º Length', 'Percent (%)'),
+        'dm': ('dv-discrep-mag', 'Unsigned Dorsal/Ventral Discrepancy of 4º Length', 'Percent (%)'),
         
         'cn12':('12-contacts', 'Percent of 1º/2º Contacts', '% Total Contacts'),
         'cn13':('13-contacts', 'Percent of 1º/3º Contacts', '% Total Contacts'),
@@ -1123,8 +1130,8 @@ def phenotype_stripchart(
         'mes': ('mito-ecc-sd', 'SD of Mitochondrial Eccentricity', 'NA'),
         'mek':('mito-ecc-skew', 'Skewness of Mitochondrial Eccentricity', 'NA'),
         'mex':('mito-ext-mean', 'Mean Mitochondrial Extent', 'NA'),
-        'mxs': ('mito-ext-skew', 'Skewness of Mitochondrial Extent', 'NA'),
-        'mxk': ('mito-size-skew', 'Skewness of Mitochondrial Size', 'NA'),
+        'mxs': ('mito-ext-sd', 'SD of Mitochondrial Extent', 'NA'),
+        'mxk': ('mito-ext-skew', 'Skewness of Mitochondrial Extent', 'NA'),
         'mpa':('mito-perimarea-mean', 'Mean Mitochondrial Perimeter/Area', '$\mu$m^-1'),
         'mps':('mito-perimarea-sd', 'SD of Mitochondrial Perimeter/Area', '$\mu$m^-1'),
         'mpk':('mito-perimarea-skew', 'Skewness of Mitochondrial Perimeter/Area', 'NA'),
@@ -1160,29 +1167,35 @@ def phenotype_stripchart(
     
     y_avg = []
     y_err = []
-    feature_data = []
+    feature_data = {}
     # !!! deleted: i = 0
     
     # For each genotype/age, extract data on the specified feature
     for genotype_age in x_labs:
-        data_by_genotype_age = filtered[filtered['genotype-age'] == genotype_age].iloc[:, 1]
-        feature_data.append(data_by_genotype_age)
+        data_by_genotype_age = filtered[filtered['genotype-age'] == genotype_age]
+        data_by_genotype_age = list(data_by_genotype_age[traits[trait][0]])
+        feature_data[genotype_age] = data_by_genotype_age
         y_avg.append(np.mean(data_by_genotype_age)) # Mean value
         y_err.append(1.96 * np.std(data_by_genotype_age)/np.sqrt(len(data_by_genotype_age))) # 95% CI
         # !!! deleted: i += 1
-
+    
+    test_results = {'feature': traits[trait][0]}
     # If there are only 2 genotypes/ages, do a t-test
-    if len(genotypes_ages) == 2:
-        pval = scipy.stats.ttest_ind(feature_data[0], feature_data[1], equal_var = False).pvalue
+    if pairwise_tests is not None:
+        for group1, group2 in pairwise_tests:
+            pval = scipy.stats.ttest_ind(feature_data[group1], feature_data[group2], equal_var = False).pvalue
+            curr_key = group1 + ' ' + group2
+            test_results[curr_key] = pval
 
-    # Generate plot    
-    fig, ax = plt.subplots(figsize = size)
+    # Generate plot
+    fig_w = size * len(genotypes_ages) / 3    
+    fig, ax = plt.subplots(figsize = (fig_w, size))
     if ylimit is not None: # Apply y-axis bounds if supplied
         ax.set_ylim(ylimit[0], ylimit[1])
     # Plot values, mean, and 95% CI
-    ax.errorbar(x_labs, y_avg, y_err, fmt = 'r_', markersize = 10, capsize = 5, linewidth = 2, barsabove = True)
     ax = sns.stripplot(x = 'genotype-age', y = traits[trait][0], data = filtered, 
-                      jitter = 0.1, size = dotsize, color = 'k')
+                      order = x_labs, jitter = 0.1, size = dotsize, color = 'k')
+    ax.errorbar(x_labs, y_avg, y_err, fmt = 'r_', markersize = 10, capsize = 5, linewidth = 2, zorder = 3)
     # Set aesthetics
     ax.set_xticklabels(x_labs, size= 12)
     ax.spines['top'].set_visible(False)
@@ -1190,52 +1203,73 @@ def phenotype_stripchart(
     plt.xlabel(None)
     plt.ylabel(traits[trait][2], size= 12) # y-axis label from features dictionary
     plt.yticks(fontsize = 16)
-    if len(genotypes_ages) == 2: # Display p-value if a t-test was performed
-        plt.text(0.7, 0.95, f'p = {pval:.2e}', transform = plt.gca().transAxes) 
     ax.set_title(traits[trait][1], weight = 'bold', size = 14, wrap = True) # plot title from features dictionary
     
-    return fig
+    return fig, test_results
 
 """
 Given a directory to an experiment, plot a histogram of branch positions over the anterior-posterior axis.
 Genotype/age and dendrite type must be specified.
 Data on position will be combined from all neuron images of a given genotype/age.
 """
-def plot_branch_dist(infolder, strain: str, dendrite_type: int):
+def plot_branch_dist(infolder, genotype_age: str, dendrite_type: int):
 
-    exp_id = str(infolder).split('-')[-1]
-    infolder = Path(infolder)
+    #exp_id = str(infolder).split('-')[-1]
+    #infolder = Path(infolder)
     y_pos = []
-    pattern = f'*{strain}*.csv'
+    pattern = f'*{genotype_age}*branches.csv'
+    stats = pd.read_csv(infolder / 'stats.csv').filter(items = ['genotype-age', 'cellbody-y'])
+    data_by_genotype_age = stats[stats['genotype-age'] == genotype_age.replace('_', '-')]
+    data_by_genotype_age = list(data_by_genotype_age['cellbody-y'])
+    cb_mean = np.mean(data_by_genotype_age)
+    cb_se = 1.96 * np.std(data_by_genotype_age)/np.sqrt(len(data_by_genotype_age))
     
     # Get position data of branches (anterior-posterior/y-axis)
     for file in infolder.glob(pattern = pattern):
         branches = pd.read_csv(file)
         # Get image height
-        image_name = str(infolder.parent) + f'/maxProj-{exp_id}/' + file.stem.replace('branches', 'maxProj.tif')
+        image_name = str(file).replace('branches.csv', 'mip.tif')
         length = tifffile.imread(image_name).shape[0]
-        # Filter for the genotype/age specified
+        # Filter for the branch class specified
         filtered_branches = branches[branches['dendrite_type'] == dendrite_type]
-        filtered_branches = [eval(branch) for branch in filtered_branches['branch']]
+        # Get branch y positions normalized by image length
+        y_pos_per_img = filtered_branches['mean_y']
+        y_pos_per_img = [i * 100 / length for i in y_pos_per_img]
+        # Add to pooled collection of y positions
+        y_pos += y_pos_per_img
+        
         # For each branch, add its normalized y pos to the list of positions
-        for n in range(len(filtered_branches)):
+        #for n in range(len(filtered_branches)):
             # !!! Consider using y_pos directly from the DataFrame
-            branch = filtered_branches[n]
-            y_coords = [pt[0] for pt in branch]
-            y_pos.append(np.mean(y_coords) * 100 / length)
+            #branch = filtered_branches[n]
+            #y_coords = [pt[0] for pt in branch]
+            #y_pos.append(np.mean(y_coords) * 100 / length)
     
     # Histogram bin cutoffs at 0, 5, 10, ..., 100
     cutoffs = [i for i in range(0, 105, 5)]
     
+    med = np.median(y_pos)
+    bin_cts = np.histogram(y_pos, cutoffs)[0]
+    max_height = max(bin_cts) / (len(y_pos) * 5)
+    
+    
     # Plot positional distribution with histogram and kernel density estimate smoothed distribution
-    fig, ax = plt.subplots()
-    ax = sns.kdeplot(y_pos)
-    ax.hist(y_pos, bins = cutoffs, density = True)
+    fig, ax = plt.subplots(figsize = (8, 1.5))
+    ax = sns.kdeplot(y_pos, color = 'blue', lw = 2)
+    ax.hist(y_pos, bins = cutoffs, density = True, color = '#669cff')
+    ax.vlines(x = med, ymin = 0, ymax = max_height + 0.001, color = 'black', linewidth = 2)
+    ax.vlines(x = cb_mean, ymin = 0, ymax = max_height + 0.001, color = 'red', linewidth = 2)
+    ax.vlines(x = cb_mean - cb_se, ymin = 0, ymax = max_height + 0.001, linestyle = 'dashed', color = 'red', linewidth = 2)
+    ax.vlines(x = cb_mean + cb_se, ymin = 0, ymax = max_height + 0.001, linestyle = 'dashed', color = 'red', linewidth = 2)
+    ax.set_xticks([0, 25, 50, 75, 100])
     ax.set_xlabel('Percent Along Anterior-Posterior Axis', fontsize=12)
     ax.set_ylabel('Density', fontsize=12)
     ax.set_xlim(0, 100)
+    ax.set_ylim(0, 0.02)
     ax.set_title(f'Distribution of {dendrite_type}º Dendrites', fontsize=14)
     ax.text(0.05, 0.95, f'{len(y_pos)}\ndendrites', transform=ax.transAxes, fontsize=12,
             verticalalignment='top') # State the number of branches
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     
     return fig

@@ -36,6 +36,8 @@ import pvd_classifier_1 as pc1
 payload = json.loads(Path('./config.json').read_text(encoding="utf-8"))
 HAS_MITO = payload.get("has_mito")
 HAS_MITO = True if HAS_MITO == 1 else 0
+TESTS = payload.get("pairwise_tests")
+TESTS = [tuple(test) for test in TESTS]
 NEURITE_SEG_PATH = payload.get("neurite_seg_path")
 MITO_SEG_PATH = payload.get("mito_seg_path")
 CLASSIFIER_PATH = payload.get("classifier_path")
@@ -161,14 +163,14 @@ def img_to_branches(
         node_data['betweenness'] = betweenness
         # Compute number of loops in the network and add to nodes data
         counted_loops = pvd.count_loops(G)
-        loops = len(counted_loops['cycle_lengths'])
-        loops_4plus = sum([i > 3 for i in counted_loops['cycle_lengths']])
-        mean_cyc_length = np.mean(counted_loops['cycle_lengths'])
-        
         node_data['loops'] = len(node_data) * ['NA']
-        node_data['loops'][0] = loops
-        node_data['loops'][1] = loops_4plus
-        node_data['loops'][2] = mean_cyc_length
+        if len(counted_loops['cycle_lengths']) > 0:
+            loops = len(counted_loops['cycle_lengths'])
+            loops_4plus = sum([i > 3 for i in counted_loops['cycle_lengths']])
+            mean_cyc_length = np.mean(counted_loops['cycle_lengths'])
+            node_data.loc[0, 'loops'] = loops
+            node_data.loc[1, 'loops'] = loops_4plus
+            node_data.loc[2, 'loops'] = mean_cyc_length
         
     # Make branches dataFrame if it hasn't yet been saved
     if already_exists(branches_path):
@@ -226,14 +228,18 @@ def img_to_branches(
             print('Step 6 already completed:\nGenerate mito data.\n')
             mito_stats = None
         else:
+            if branch_stats is None:
+                branch_stats = pd.read_csv(img_path.replace('Straightened.tif', 'branches.csv')).iloc[:, 1:]
+                branch_stats['branch'] = [eval(branch) for branch in branch_stats['branch']]
             mito_stats = pvd.make_mito_df(mito_seg, branch_stats)
             print('Step 6 completed successfully:\nGenerate mito data.\n')
     else:
         mito_stats = None
 
     # If any output dataFrame is already saved, tell the user    
-    if branch_stats is None:
+    if already_exists(branches_path):
         print('Already generated branch data!')
+        branch_stats = None
     if node_data is None:
         print('Already generated node data!')
     if mito_stats is None:
@@ -325,14 +331,14 @@ Inputs:
     adj_branch_distributions = whether or not to set 0 in branch distributions to be at the cell body, default = True
 Output: DataFrame where each row is a morphological profile of an image with:
     41 features describing mitochondria
-    90 features describing neurites
-    131 total features
+    97 features describing neurites
+    138 total features
 """
 def write_feature_table(folder: str, mito = True, adj_branch_distributions = True) -> pd.DataFrame:
     """Collect all branches files (one per image subdirectory)."""
     folder = Path(folder)
     files = []
-    for file in folder.glob('*/*branches.csv'):
+    for file in folder.glob('*branches.csv'):
         files.append(str(file))
     files.sort()
     
@@ -483,7 +489,16 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
             else: # left = ventral
                 quat_lens_V.append(row['length'])
         # Mean length discrepancy between D/V sides, as pct of width
-        mean_diff_DV = np.mean(quat_lens_D) - np.mean(quat_lens_V)
+        if len(quat_lens_V) == 0:
+            mean_V = 0
+        else:
+            mean_V = np.mean(quat_lens_V)
+        if len(quat_lens_D) == 0:
+            mean_D = 0
+        else:
+            mean_D = np.mean(quat_lens_D)
+        
+        mean_diff_DV = mean_D - mean_V
         mean_diff_DV = mean_diff_DV * 100 / width
         
         """PART THREE: COMPUTE GLOBAL STATS ON ENTIRE NEURITE NETWORK"""
@@ -540,6 +555,10 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
         total_ct = prim_ct + sec_ct + tert_ct + quat_ct
         
         # IV: Network Topology Metrics
+        # Get loop count data before filtering nodes data
+        loop_3plus = nodes['loops'][0]
+        loop_4plus = nodes['loops'][1]
+        mean_loop_length = nodes['loops'][2]
         # Remove nodes w/ degree == 2 and get a DataFrame without terminal nodes
         nodes = nodes[nodes['type'] != 'continuation']
         nodes_noterm = nodes[nodes['type'] == 'branch_point']
@@ -657,8 +676,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'image': img_name,
                 'genotype-age': genotype_age,
                 'length': length_um,
-                'cellbody_x': cellbody_x_pct,
-                'cellbody_y': cellbody_y_pct,
+                'cellbody-x': cellbody_x_pct,
+                'cellbody-y': cellbody_y_pct,
                 'prim-ct': prim_ct / length_um, # Normalize by neuron length
                 'prim-length': prim_length / length_um, # Normalize by neuron length
                 'prim-wavy': prim_wavy,
@@ -752,9 +771,9 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'num-degree-4+': num_high_degree / length_um, # Normalize by neuron length
                 'pct-degree-4+': 100 * num_high_degree / len(nodes_noterm), # What % of intersection nodes are degree 4+?
                 'mean-betweenness': np.mean(nodes_noterm['betweenness']),
-                'loop-3plus': nodes['loops'][0],
-                'loop-4plus': nodes['loops'][1],
-                'mean-loop-length': nodes['loops'][2],
+                'loop-3plus': loop_3plus,
+                'loop-4plus': loop_4plus,
+                'mean-loop-length': mean_loop_length,
                     
                 'mito-tot-ct': tot_mito_ct / length_um, # Normalize by neuron length
                 'mito-prim-ct': prim_mito_ct / length_um, # Normalize by neuron length
@@ -807,8 +826,8 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'image': img_name,
                 'genotype-age': genotype_age,
                 'length': length_um,
-                'cellbody_x': cellbody_x_pct,
-                'cellbody_y': cellbody_y_pct,
+                'cellbody-x': cellbody_x_pct,
+                'cellbody-y': cellbody_y_pct,
                 'prim-ct': prim_ct / length_um, # Normalize by neuron length
                 'prim-length': prim_length / length_um, # Normalize by neuron length
                 'prim-wavy': prim_wavy,
@@ -902,9 +921,9 @@ def write_feature_table(folder: str, mito = True, adj_branch_distributions = Tru
                 'num-degree-4+': num_high_degree / length_um, # Normalize by neuron length
                 'pct-degree-4+': 100 * num_high_degree / len(nodes_noterm), # What % of intersection nodes are degree 4+?
                 'mean-betweenness': np.mean(nodes_noterm['betweenness']),
-                'loop-3plus': nodes['loops'][0],
-                'loop-4plus': nodes['loops'][1],
-                'mean-loop-length': nodes['loops'][2]
+                'loop-3plus': loop_3plus,
+                'loop-4plus': loop_4plus,
+                'mean-loop-length': mean_loop_length
             })
         
     return pd.DataFrame(stats)
@@ -916,31 +935,36 @@ Inputs:
     folder = path to the dataset folder of images
     mito = whether or not the dataset has mitochondrial channels
 """
-def plot_all_features(data: pd.DataFrame, folder: str, mito = True):
+def plot_all_features(data: pd.DataFrame, folder: str, tests: list, mito = True):
     # List of all feature short names for plotting
     short_features = [
         'ln', 'cbx', 'cby',
         'ct1', 'ln1', 'wv1', 'tt1', 'cv1', 'it1', 'ag1', 'as1',
         'ct2', 'ln2', 'wv2', 'tt2', 'cv2', 'it2', 'ag2', 'as2', 'md2', 'sk2', 'pt2', 'at2',
         'ct3', 'ln3', 'wv3', 'tt3', 'cv3', 'it3', 'ag3', 'as3', 'md3', 'sk3', 'pt3', 'at3',
-        'ct4', 'ln4', 'wv4', 'tt4', 'cv4', 'it4', 'ag4', 'as4', 'md4', 'sk4', 'pt4', 'at4',
+        'ct4', 'ln4', 'wv4', 'tt4', 'cv4', 'it4', 'ag4', 'as4', 'md4', 'sk4', 'pt4', 'at4', 'dv', 'dm',
         'cn12', 'cn13', 'cn14', 'cn23', 'cn24', 'cn34', 'im', 'is', 'ik', 'ad1', 'ad2', 'ad3', 'ad4', 'ad5', 'ad6', 'ad7', 'ad8', 'ad9', 'ad10', 'ad11', 'ad12', 'ad13', 'ad14', 'ad15', 'ad16', 'ad17', 'ad18', 'lr12', 'lr13', 'lr14', 'lr23', 'lr24', 'lr34', 'cr23', 'cr42', 'cr43',
         'oo', 'tn', 'pt', 'id', 'ed', 'md', 'nd4', 'pd4', 'bt', 'lp3', 'lp4', 'll',
         'mct', 'mct1', 'mct2', 'mct3', 'mct4', 'mac', 'mpc', 'mbc', 'mbp', 'nn', 'rn', 'mec', 'mes', 'mek', 'mex', 'mxs', 'mxk', 'mpa', 'mps', 'mpk', 'mos', 'mdm', 'mds', 'mdk', 'msz', 'mss', 'msk', 'mja', 'mjs', 'mjk', 'mna', 'mns', 'mnk', 'meq', 'mqs', 'mqk', 'mpm', 'mms', 'mmk', 'mfd', 'mfs', 'mfk'
         ]
     if not mito:
-        short_features = short_features[:90]
+        short_features = short_features[:97]
 
     # Make a plots subfolder for saving plots
     Path(folder + '/plots/').mkdir(exist_ok = True)
     
+    pvalues = []
     # Plot each feature and save as a png
     for feature in short_features:
-        fig = pvd.phenotype_stripchart(data, feature, size = (3, 3)) # Plot function # !!! 
+        fig, test_results = pvd.phenotype_stripchart(data, feature, pairwise_tests = tests, size = 3) # Plot function # !!! 
         # Save the plot in the plots subfolder
         fig.savefig(folder + '/plots/' + feature + '.png', bbox_inches = 'tight') 
         plt.close(fig)
+        pvalues.append(test_results)
         print(f'plotted {feature}')
+    
+    pvalues = pd.DataFrame(pvalues)
+    pvalues.to_csv(folder + '/plots/pvalues.csv')
 
 """
 Generate distinguishable colors for genotypes and marker shapes for ages.
@@ -955,18 +979,16 @@ Returns:
         - genotype_colors: [color]
         - age_markers: [marker]
 """
-def generate_genotype_colors_and_age_markers(n_genotypes: int, n_ages: int) -> tuple[list]:
+def generate_genotype_colors_and_age_markers(n_genotypes, n_ages):
     # Generate distinct colors for each genotype
-    base_hues = np.linspace(0, 1, n_genotypes, endpoint=False) # Hues are maximally spaced
+    # blue, red, green, cyan, magenta, gold, orange, purple, fuschia, light blue, light green, lime green 
+    color_options = ['#0000ff', '#c80000', '#00c800', '#00e6e6', '#ff00ff', '#ffc805', 
+                     '#ff8000', '#8000ff', '#ff0080', '#0080ff', '#00ff80', '#b4e600']
     genotype_colors = []
     
     for i in range(n_genotypes):
-        saturation = 0.85
-        lightness = 0.55
-        # Convert HSB to hex code of RGB color
-        rgb = mcolors.hsv_to_rgb([base_hues[i], saturation, lightness])
-        hex_color = mcolors.to_hex(rgb)
-        genotype_colors.append(hex_color)
+        #genotype_name = f'genotype_{i + 1}'
+        genotype_colors.append(color_options[i % len(color_options)])
     
     # Define marker shapes for each age
     # Using easily distinguishable markers
@@ -974,7 +996,7 @@ def generate_genotype_colors_and_age_markers(n_genotypes: int, n_ages: int) -> t
     age_markers = []
     
     for i in range(n_ages):
-        # Modulus (%) operator allows for recycling markers if n_ages > 10
+        #age_name = f"age_{i+1}"
         age_markers.append(marker_options[i % len(marker_options)])
     
     return genotype_colors, age_markers
@@ -988,7 +1010,7 @@ def main():
     
     """Extract data on each image in the dataset."""
     folder = Path(FPATH)
-    for in_path in folder.glob('*/*Straightened.tif'):
+    for in_path in folder.glob('*Straightened.tif'):
         # Getting input Straightened.tif paths to put into img_to_branches()
         if '._' in in_path.stem:
             continue
@@ -1029,9 +1051,9 @@ def main():
         
     """Plot features"""
     if DRY:
-        print(f'Generating 131 plots at {FPATH}/plots/.')
+        print(f'Generating 138 plots at {FPATH}/plots/.')
     else:    
-        plot_all_features(data, FPATH, mito = HAS_MITO)
+        plot_all_features(data, FPATH, TESTS, mito = HAS_MITO)
     
     """PCA"""
     if not DRY:
@@ -1039,6 +1061,7 @@ def main():
         features = list(data.columns)[3:] # [3:] excludes img name, genotype, and length from features
         x = data.loc[:, features].values
         x = StandardScaler().fit_transform(x) # Normalize data for PCA
+        x[np.isnan(x)] = 0 # Replace any nan with 0
         
         # Perform PCA with 2 principal components
         pca = PCA(n_components = 2)
@@ -1048,33 +1071,32 @@ def main():
         # Add columns for img name and genotype
         plottingDf = pd.concat([principalDf, data[['genotype-age', 'image']]], axis = 1)
     
-    # Make PCA plot
-    # Make lookup structure linking genotype/age combos with colors and markers
-    genotypes_ages = set(list(data.loc[:, 'genotype-age'])) # Get only unique values
-    genotypes_ages = list(genotypes_ages)
-    geno_age_df = [] # DataFrame will have one row for each combo, columns for geno and age
-    for combo in genotypes_ages:
-        genotype, age = combo.split('-')
-        geno_age_df.append({
-            'genotype': genotype,
-            'age': age,
-        })
-    geno_age_df = pd.DataFrame(geno_age_df).sort_values(by = ['genotype', 'age'])
-    n_genotypes = len(geno_age_df['genotype'].unique()) # num of unique genotypes
-    n_ages = int(len(genotypes_ages) / n_genotypes)
-    colors, markers = generate_genotype_colors_and_age_markers(n_genotypes, n_ages)
-    # Add colors and markers to lookup table
-    _colors = []
-    for color in colors:
-        for i in range(n_ages):
-            _colors.append(color)
-    geno_age_df['color'] = _colors # [[c1] * a, [c2] * a, ... [cg] * a]; a = n_ages, g = n_genos 
-    geno_age_df['marker'] = markers * n_genotypes # [m1, m2, ..., ma] * g
+        # Make PCA plot
+        # Make lookup structure linking genotype/age combos with colors and markers
+        genotypes_ages = set(list(data.loc[:, 'genotype-age'])) # Get only unique values
+        genotypes_ages = list(genotypes_ages)
+        geno_age_df = [] # DataFrame will have one row for each combo, columns for geno and age
+        for combo in genotypes_ages:
+            genotype, age = combo.split('-')
+            geno_age_df.append({
+                'genotype': genotype,
+                'age': age,
+            })
+        geno_age_df = pd.DataFrame(geno_age_df).sort_values(by = ['genotype', 'age'])
+        n_genotypes = len(geno_age_df['genotype'].unique()) # num of unique genotypes
+        n_ages = int(len(genotypes_ages) / n_genotypes)
+        colors, markers = generate_genotype_colors_and_age_markers(n_genotypes, n_ages)
+        # Add colors and markers to lookup table
+        _colors = []
+        for color in colors:
+            for i in range(n_ages):
+                _colors.append(color)
+        geno_age_df['color'] = _colors # [[c1] * a, [c2] * a, ... [cg] * a]; a = n_ages, g = n_genos 
+        geno_age_df['marker'] = markers * n_genotypes # [m1, m2, ..., ma] * g
+    
     # For dry run, show the genotypes/ages that would be plotted and their markers/colors
     if DRY:
         print(f'Generating PCA plot at {FPATH}/pca.png.')
-        for row in geno_age_df.iterrows():
-            print(row)
     if not DRY:
         # Figure setup
         fig = plt.figure(figsize = (8,8))
@@ -1083,14 +1105,15 @@ def main():
         ax.set_ylabel('Principal Component 2', fontsize = 15)
         ax.set_title('2 component PCA', fontsize = 20)
         # For each genotype/age, plot corresponding data points with distinct color/marker
-        for row in geno_age_df.iterrows():
+        for _idx, row in geno_age_df.iterrows():
             indicesToKeep = plottingDf['genotype-age'] == f"{row['genotype']}-{row['age']}"
             ax.scatter(plottingDf.loc[indicesToKeep, 'PC_1'], 
                     plottingDf.loc[indicesToKeep, 'PC_2'], 
                     c = row['color'],
                     marker = row['marker'],
-                    s = 50)
-        ax.legend(genotypes_ages)
+                    s = 50,
+                    label = f"{row['genotype']}-{row['age']}")
+        ax.legend()
         ax.grid()
         # Save plot
         fig.savefig(FPATH + '/pca.png', bbox_inches = 'tight')
