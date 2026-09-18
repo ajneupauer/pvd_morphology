@@ -1,8 +1,6 @@
 # pvd_morphology
 Software for quantitative analysis of microscopy images of *C. elegans* PVD neurons.
 
-*__Note:__ images in this README do not render in the GitHub site. To view a proper rendering, look at `README.html`.*
-
 ## Configuration and File Setup
 First, clone the repository onto your local computer. On terminal (or Windows Linux subsystem), move to a directory where you would like to download the repo. Once there, run `git clone https://github.com/ajneupauer/pvd_morphology.git` to download the repo. There will now be a folder in your chosen directory called "pvd_morphology". Move into the repo with the command `cd <path_to_parent_directory>/pvd_morphology`.
 
@@ -107,14 +105,10 @@ python ./generate_coordinates.py <path_to_experiment_1>
 
 The shell will prompt you to choose from a list of images. Enter the number of the image you wish to open or press enter to load the first one. A Napari GUI will open for you to extract coordinates down the midline of the worm, which are used to produce straightened images. Follow these six simple steps:
 
-1) Look for a “manual threshold” option on the right-hand widgets. Set it to 105 and check the box for “use manual threshold”. Press “generate mask” to see the results. The mask should more or less follow the contour of the worm, though not perfectly. You may need to play with the threshold and other options like “min size” or “morph open” and regenerate the mask to get a satisfactory result. 
-2) Most likely, you will need to edit the mask to precisely outline the boundary of the worm. Do not include the FLP neuron in the mask!
-3) Press the “Extract center line” button. If it fails, check for any small groups of pixels separated from the main mask. Erase them and try again. Ensure the line indeed moves down the center of the worm. If it does not, this is a sign to edit your mask and extract the line again. 
-4) Finally, press “straighten” to generate a preview of the straightened image. If the posterior end is on the left side, you will need to check the “flip worm” option. The width should also be adjusted so there isn’t much empty space along the top/bottom of the preview. Adjust these settings and re-straighten until achieving the desired result.
-5) The results are saved automatically. Note that you are actually generating a list of coordinates down the center of the worm along which the `*squished.tif` images will be straightened. The result is a `.npy` file.
-6) Use the dropdown menu on the left to select your next image. Repeat until all images straightening coordinates are completed.
-
-![](/Users/alexneupauer/starr-luxton-lab/pvd-project/pvd_morphology/napari_demo.png)
+1) Select the "user trace" layer and use the brush tool to draw a line along the center of the neuron. Do not include the FLP neuron in the trace! It should stop at the anteriormost tip of the neuron.
+2) Press “straighten” to generate a preview of the straightened image. If the posterior end is on the left side, you will need to check the “flip worm” option. The width should also be adjusted so there isn’t much empty space along the top/bottom of the preview. Adjust these settings and re-straighten until achieving the desired result. Also check the preview for any kinks caused by tracing errors.
+3) The results are saved automatically. Note that you are actually generating a list of coordinates down the center of the worm along which the `*squished.tif` images will be straightened. The result is a `.npy` file.
+6) Press the "Next Image >>" button in the lower left corner to select the next image. Repeat until all images' straightening coordinates are completed.
 
 Once all coordinates are extracted from all images, move onto straightening the images. Run the following:
 ```
