@@ -284,7 +284,8 @@ def test_accuracy(color_map: np.ndarray, pred_results: pd.DataFrame, weighted=Fa
 Given a 2D binary mask of neurites, classify branch fragments and record them in a DataFrame.
 """
 def classify_mask(mask: np.ndarray, maxProj: np.ndarray, model: pc1.PVDNeuriteClassifier) -> pd.DataFrame:
-    results = model.predict(mask, maxProj) # Run the actual model prediction
+    features = pc1.extract_features(mask, maxProj)
+    results = model.predict(features) # Run the actual model prediction
     # Get data on fragment points and length and add to results table
     branch_data = model.branch_data
     results['length'] = branch_data['length']

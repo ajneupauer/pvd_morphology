@@ -296,35 +296,37 @@ class PVDNeuriteClassifier:
                 'average_intensity': avg_intensity
             })
         
-        return pd.DataFrame(features)
+        self.branch_data = pd.DataFrame(features)
+        
+        return self.branch_data
     
     """
     Train the model with labeled data.
         Data: neurite masks with their associated MIPs
         Labels: colormaps indicating what branch label exists at each pixel
     """
-    def train(self, images: list[np.ndarray], color_maps: list[np.ndarray], max_projs: list[np.ndarray], balance_method='class_weight'):
+    def train(self, X: np.ndarray, y: np.ndarray, balance_method='class_weight'):
         # Part 1: Extract features from all images
-        all_features = []
-        all_labels = []
+        #all_features = []
+        #all_labels = []
         
-        for i in range(len(images)):
+        #for i in range(len(images)):
             # Extract features
-            features = self.extract_features(images[i], max_projs[i])
+        #    features = self.extract_features(images[i], max_projs[i])
             # Get labels
-            label_path = color_maps[i]
-            image_labels = get_labels(label_path, self.branch_data)
+        #    label_path = color_maps[i]
+        #    image_labels = get_labels(label_path, self.branch_data)
             # Add labels
-            for idx, row in features.iterrows():
-                segment_id = row['id']
+        #    for idx, row in features.iterrows():
+        #        segment_id = row['id']
                 # Only proceed if the segment has a label and it is not zero
-                if segment_id in image_labels and image_labels[segment_id] != 0:
+        #        if segment_id in image_labels and image_labels[segment_id] != 0:
                     # Add image's labels and features
-                    all_features.append(row.drop(['id', 'length']).values) # Don't need length or id
-                    all_labels.append(image_labels[segment_id])
+        #            all_features.append(row.drop(['id', 'length']).values) # Don't need length or id
+        #            all_labels.append(image_labels[segment_id])
         
-        X = np.array(all_features)
-        y = np.array(all_labels)
+        #X = np.array(all_features)
+        #y = np.array(all_labels)
         
         # Part 2: Check class distribution
         class_counts = Counter(y)
@@ -374,11 +376,9 @@ class PVDNeuriteClassifier:
     """
     Predict dendrite types in a new image.
     """    
-    def predict(self, img: np.ndarray, max_proj: np.ndarray) -> pd.DataFrame:
-        # Extract features
-        features = self.extract_features(img, max_proj)
+    def predict(self, features: pd.DataFrame) -> pd.DataFrame:
         # Predict
-        predictions = self.model.predict(features.drop(['id', 'length'], axis=1).values)
+        predictions = self.model.predict(features.drop(['id', 'segment', 'length'], axis=1).values)
         # Add predictions to features
         features['dendrite_type'] = predictions
         
@@ -429,6 +429,268 @@ class PVDNeuriteClassifier:
         return fig
 
 """Helper functions"""
+
+"""
+Load and preprocess fluorescence image.
+Also skeletonize the mask and return the skeleton. 
+"""
+def preprocess_image(img: np.ndarray) -> np.ndarray:
+    # If it's already binary, use as is; otherwise threshold
+    if img.dtype == bool or np.all(np.isin(img, [0, 1])):
+        binary = img > 0
+    else:
+        # Apply Gaussian smoothing first
+        img_smooth = filters.gaussian(img, sigma=0.5)
+        # Use Otsu thresholding
+        threshold = filters.threshold_otsu(img_smooth)
+        binary = img_smooth > threshold
+    
+    # Clean up small artifacts
+    binary = morphology.remove_small_objects(binary, min_size=150)
+    
+    # Add vertical/horizontal filter layers to binary image
+    img = img.astype(np.uint8)
+    # Morphological opening with vertical structuring element (filter emphasizes vertical elements)
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 15))
+    vertical_branches = cv2.morphologyEx(img, cv2.MORPH_OPEN, vertical_kernel)
+    # Morphological opening with horizontal structuring element (filter emphasizes horizontal elements) 
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 1))
+    horizontal_branches = cv2.morphologyEx(img, cv2.MORPH_OPEN, horizontal_kernel)
+    # Reconstruct to preserve connections
+    vertical_reconstructed = cv2.morphologyEx(vertical_branches, cv2.MORPH_DILATE, 
+                                            cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3)))
+    vertical_final = cv2.bitwise_and(vertical_reconstructed, img)
+    horizontal_reconstructed = cv2.morphologyEx(horizontal_branches, cv2.MORPH_DILATE, 
+                                            cv2.getStructuringElement(cv2.MORPH_CROSS, (3,3)))
+    horizontal_final = cv2.bitwise_and(horizontal_reconstructed, img)
+    # Remove overlap between vertical and horizontal
+    vertical_only = cv2.subtract(vertical_final, horizontal_final)
+    horizontal_only = cv2.subtract(horizontal_final, vertical_final)
+    
+    # Skeletonize mask
+    pre_skeleton = morphology.skeletonize(binary)
+    # Remove terminal branch artifacts (less than 10 px long)
+    skeleton = prune_terminal_branches(pre_skeleton, min_length=10)
+    
+    # Add classifier attribute image, 
+    # a three-layer image with the original mask and horizontal/vertical filters
+    height, width = img.shape
+    preprocessed = np.empty([3, height, width], dtype = np.uint8)
+    preprocessed[0] = skeleton
+    preprocessed[1] = vertical_only
+    preprocessed[2] = horizontal_only
+    
+    return preprocessed
+
+"""
+Convert skeleton to graph representation.
+Each node is a pixel in the skeleton, and each edge represents connections between adjacent pixels.
+"""
+def extract_graph(skeleton: np.ndarray) -> nx.Graph:
+    # Find intersection points and endpoints
+    branch_points = _find_branch_points(skeleton)
+    end_points = _find_end_points(skeleton)
+    
+    # Create a graph with nodes at intersection points and endpoints
+    G = nx.Graph()
+    
+    # Add all points as nodes
+    for point in np.argwhere(skeleton):
+        G.add_node(tuple(point), pos=tuple(point), type='segment')
+    
+    # Mark intersection points and endpoints
+    for point in branch_points:
+        G.nodes[tuple(point)]['type'] = 'branch'
+    for point in end_points:
+        G.nodes[tuple(point)]['type'] = 'end'
+    
+    # Connect adjacent pixels in the skeleton
+    for i, j in np.argwhere(skeleton):
+        if skeleton[i, j]: # If the given point isn't background
+            # Check all 8 neighbors
+            for di in [-1, 0, 1]:
+                for dj in [-1, 0, 1]:
+                    # Skip the self point
+                    if di == 0 and dj == 0:
+                        continue
+                    ni, nj = i + di, j + dj # Current neighbor point
+                    # If the neighbor point exists and is not background, add edge between self and neighbor
+                    if 0 <= ni < skeleton.shape[0] and 0 <= nj < skeleton.shape[1] and skeleton[ni, nj]:
+                        G.add_edge((i, j), (ni, nj))
+    
+    return G
+
+"""
+Find intersection points in the skeleton.
+"""
+def _find_branch_points(skeleton: np.ndarray) -> np.ndarray:
+    # Define the kernel for convolution
+    kernel = np.array([
+        [1, 1, 1],
+        [1, 10, 1],
+        [1, 1, 1]
+    ])
+    # Convolve the skeleton with the kernel
+    conv = ndimage.convolve(skeleton.astype(int), kernel, mode='constant', cval=0)
+    # Intersection points have values >= 13 (center + 3 or more neighbors)
+    branch_points = np.argwhere(conv >= 13)
+    
+    return branch_points
+
+"""
+Find endpoints in the skeleton.
+"""
+def _find_end_points(skeleton: np.ndarray) -> np.ndarray:
+    # Define the kernel for convolution
+    kernel = np.array([
+        [1, 1, 1],
+        [1, 10, 1],
+        [1, 1, 1]
+    ])
+    # Convolve the skeleton with the kernel
+    conv = ndimage.convolve(skeleton.astype(int), kernel, mode='constant', cval=0)
+    # Endpoints have values = 11 (center + 1 neighbor)
+    end_points = np.argwhere(conv == 11)
+    
+    return end_points
+
+"""
+Separate the skeleton graph into branch segments.
+Each branch is an entry in a DataFrame providing its points and basic stats.
+"""
+def segment_neurites(G: nx.Graph) -> pd.DataFrame:
+    if G is None:
+        raise ValueError("Graph not created. Run extract_graph first.")
+    
+    # Get list of only graph nodes representing intersection and endpoints
+    all_neighbors = G.adj
+    b_and_e_pts = [n for n, attr in G.nodes(data=True) if attr['type'] != 'segment']
+    
+    segments = []
+    visited = [] # Track nodes already visited
+    
+    # Find paths connecting each intersection/endpt to all its adjacent intersection/endpts
+    for pt in b_and_e_pts:
+        b_pt_neighbors = list(all_neighbors[pt])
+        # Trace a path towards each neighbor
+        for neighbor in b_pt_neighbors:
+            if neighbor not in visited: # If the neighbor is already visited, this path has already been found
+                # Initialize a path from the current pt towards one of its neighbors 
+                segment = [pt, neighbor]
+                # Keep extending the path until the growing end encounters 'branch' or 'end' nodes
+                while G.nodes[segment[-1]]['type'] == 'segment':
+                    seg_neighbors = list(all_neighbors[segment[-1]])
+                    nodes_added = 0
+                    # Look at all neighbors of the growing end
+                    for i in range(len(seg_neighbors)):
+                        # Only add neighbors not already in the segment
+                        # The penulimate pt in the path will be a neighbor of the growing end, but we don't want to add it again
+                        if seg_neighbors[i] != segment[-2 - nodes_added]:
+                            segment.append(seg_neighbors[i])
+                            nodes_added += 1
+                # Only add paths longer than 5 pixels to the list of segments
+                if len(segment) > 5:            
+                    segments.append(segment)
+                    # The penultimate pt in the path is the neighbor of another branch/endpt
+                    # Prevents from double-counting reciprocal paths (e.g.: A -> B, B -> A)
+                    visited.append(segment[-2]) 
+    
+    # Basic features for each segment
+    segment_features = []
+    n = 0
+    for i, segment in enumerate(segments):
+        num_pts = len(segment)
+        if num_pts > 5: # Again, ensure only paths longer than 5 pixels are included
+            length, orientation, curvature, tortuosity, waviness = branch_geom(segment)
+            segment_features.append({
+                'id': n,
+                'length': length,
+                'orientation': orientation,
+                'curvature': curvature,
+                'tortuosity': tortuosity,
+                'waviness': waviness,
+                'segment': segment
+            })
+            n += 1
+    
+    return pd.DataFrame(segment_features)
+
+"""
+Extract features from segments for machine learning.
+"""
+def extract_features(img: np.ndarray, max_proj: np.ndarray) -> pd.DataFrame:
+    # Preprocess image
+    preprocessed_img = preprocess_image(img)
+    skeleton = preprocessed_img[0]
+    # Extract graph
+    G = extract_graph(skeleton)
+    # Convert to segments
+    segments = segment_neurites(G)
+    
+    # Extract additional features for classification and add to basic features
+    features = []
+    for idx, row in segments.iterrows():
+        segment = row['segment']
+        # Get x and y coords at each point
+        x_pos = [pt[1] for pt in segment]
+        y_pos = [pt[0] for pt in segment]
+        
+        # Average intensity
+        # !!! Consider image normalization
+        intensities = [max_proj[y_pos[i], x_pos[i]] for i in range(len(segment))]
+        avg_intensity = np.mean(intensities)
+        
+        # Segment position
+        midpt_x = np.mean(x_pos)
+        rel_x = midpt_x / skeleton.shape[1]
+        midpt_y = np.mean(y_pos)
+        
+        # Local density (how many skeleton pixels in neighborhood of the midpt)
+        neighborhood_size = 200 # Makes 401 x 401 px box
+        y_min = round(max(0, midpt_y - neighborhood_size))
+        y_max = round(min(skeleton.shape[0], midpt_y + neighborhood_size))
+        x_min = round(max(0, midpt_x - neighborhood_size))
+        x_max = round(min(skeleton.shape[1], midpt_x + neighborhood_size))
+        local_density = np.sum(skeleton[y_min:y_max, x_min:x_max]) / ((y_max-y_min) * (x_max-x_min))
+        
+        # Get horizontalness and verticalness
+        hCount = 0 # Track horizontal and total points encountered
+        ptCount = 0
+       
+        for point in segment:
+            # If the point is in the vertical filter...
+            if preprocessed_img[1, point[0], point[1]] == 1:
+                ptCount += 1
+            # If the point is in the horizontal filter, add to horizontal point count
+            if preprocessed_img[2, point[0], point[1]] == 1:
+                hCount += 1
+                ptCount += 1
+        # Horizontalness = proportion of points in the horizontal filter
+        if ptCount != 0: 
+            hNess = hCount / ptCount
+        else: 
+            hNess = 0
+        
+        features.append({
+            'id': row['id'],
+            'segment': row['segment'],
+            'length': row['length'],
+            'orientation': row['orientation'],
+            'curvature': row['curvature'],
+            'tortuosity': row['tortuosity'],
+            'waviness': row['waviness'],
+            'horizontal_likely': hNess > 0.5,
+            'relative_y': midpt_y / skeleton.shape[0],
+            'relative_x': rel_x,
+            # Applies heavy weight to relative x pos where quaternaries are common
+            'quat_filter': 0.2 * np.sin(3 * np.pi * rel_x) + 0.5,
+            'local_density': local_density,
+            'average_intensity': avg_intensity
+        })
+    
+    return pd.DataFrame(features)
+
+
 
 """
 Given a set of branches in a DataFrame, get the labels of the branches at their midpoints.
@@ -527,7 +789,10 @@ def branch_geom(branch: list[tuple]) -> tuple:
 
     # Euclidean length and tortuosity
     euclidean_length = np.linalg.norm(np.array([branch[-1, 0] - branch[0, 0], branch[-1, 1] - branch[0, 1]]))
-    tortuosity = length / euclidean_length
+    if euclidean_length == 0:
+        tortuosity = 0
+    else:
+        tortuosity = length / euclidean_length
     
     # Parametric curvature and waviness
     s = branch.shape[0] - np.sqrt(2 * branch.shape[0]) # Recommended to use m - np.sqrt(2*m), m = # points
